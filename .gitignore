@@ -1,0 +1,121 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.pyc
+*.pyo
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.qoder
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Storage
+storage/tasks/*
+storage/cache/*
+!storage/tasks/.gitkeep
+!storage/cache/.gitkeep
+
+# Vector DB
+storage/vectordb/chroma.sqlite3
+storage/vectordb/index/
+
+# Config (保留模板，忽略实际配置)
+config/*.toml
+!config/*.toml.example
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Frontend Build
+frontend/dist/
+frontend/.nuxt/
+frontend/.output/
+frontend/.vite/
+frontend/.temp/
+
+# Test
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+
+# Deployment
+*.7z
+*.zip
+*.tar.gz
+mcp-autotest-release/
+
+# Temp
+*.tmp
+*.bak
+.temp/
+
+# OS
+Thumbs.db
+desktop.ini
+
+# Documentation Build
+docs/_build/
+docs/.doctrees/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# Reports (用于测试，不提交)
+reports/
+testcases/
+
+# Secrets
+secrets/
+*.key
+*.pem
+
+# Quest执行记录
+docs

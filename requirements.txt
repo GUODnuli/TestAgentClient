@@ -1,0 +1,39 @@
+# MCP Interface Test Agent - Python Dependencies
+
+# Core Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+python-multipart==0.0.6
+
+# Test Engine
+requests==2.31.0
+# httprunner==4.3.5  # Disabled to avoid dependency conflicts
+
+# Database and Storage
+chromadb==0.4.15  # Compatible with Python 3.12, avoid onnxruntime issues
+faiss-cpu==1.13.2
+sentence-transformers==2.2.2
+
+# Configuration and Logging
+toml==0.10.2
+loguru==0.7.2
+
+# HTTP Client and Tools
+httpx==0.25.2
+jsonpath-ng==1.6.0
+
+# Document Parsing
+pyyaml==6.0.1
+jsonschema==4.20.0
+python-docx==1.1.0  # Word document processing
+
+# Template Engine
+jinja2==3.1.2
+
+# Utilities
+python-dotenv==1.0.0
+rich==13.7.0
+
+# Web Related
+websockets==12.0
