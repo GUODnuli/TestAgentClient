@@ -33,6 +33,19 @@ class TaskType(str, Enum):
     ANALYZE_REPORT = "analyze-report"
 
 
+class UserStatus(str, Enum):
+    """用户状态枚举"""
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    BANNED = "banned"
+
+
+class UserRole(str, Enum):
+    """用户角色枚举"""
+    USER = "user"
+    ADMIN = "admin"
+
+
 class DatabaseError(Exception):
     """数据库操作异常"""
     pass
@@ -87,10 +100,52 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             
+            # 检查 tasks 表是否存在且结构是否正确
+            cursor.execute("""
+                SELECT sql FROM sqlite_master 
+                WHERE type='table' AND name='tasks'
+            """)
+            result = cursor.fetchone()
+            
+            if result and 'user_id' not in result[0]:
+                # 表存在但缺少 user_id 列，删除重建
+                self.logger.warning("检测到旧版本 tasks 表，即将重建")
+                cursor.execute("DROP TABLE IF EXISTS tasks")
+                conn.commit()
+            
+            # 创建用户表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id TEXT PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE,
+                    email TEXT UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    display_name TEXT,
+                    role TEXT NOT NULL DEFAULT 'user',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_login_at TEXT
+                )
+            """)
+            
+            # 创建用户名索引
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_username 
+                ON users(username)
+            """)
+            
+            # 创建邮箱索引
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_email 
+                ON users(email)
+            """)
+            
             # 创建任务表
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tasks (
                     task_id TEXT PRIMARY KEY,
+                    user_id TEXT,
                     task_type TEXT NOT NULL,
                     status TEXT NOT NULL,
                     parameters TEXT,
@@ -100,7 +155,8 @@ class Database:
                     updated_at TEXT NOT NULL,
                     started_at TEXT,
                     completed_at TEXT,
-                    error_message TEXT
+                    error_message TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
                 )
             """)
             
@@ -118,6 +174,13 @@ class Database:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_created_at 
                 ON tasks(created_at)
+            """)
+            
+            self.logger.debug("准备创建 user_id 索引")
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_task_user_id 
+                ON tasks(user_id)
             """)
             
             conn.commit()
@@ -601,6 +664,616 @@ class Database:
         
         except Exception as e:
             self.logger.error(f"获取任务统计失败: {e}")
+            return {}
+    
+    # ==================== 用户相关方法 ====================
+    
+    def create_user(
+        self,
+        user_id: str,
+        username: str,
+        password_hash: str,
+        email: Optional[str] = None,
+        display_name: Optional[str] = None,
+        role: UserRole = UserRole.USER
+    ) -> bool:
+        """
+        创建新用户
+        
+        Args:
+            user_id: 用户唯一标识
+            username: 用户名
+            password_hash: 密码哈希
+            email: 邮箱（可选）
+            display_name: 显示名称（可选）
+            role: 用户角色
+            
+        Returns:
+            是否创建成功
+            
+        Raises:
+            DatabaseError: 创建失败
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                now = datetime.now().isoformat()
+                
+                cursor.execute("""
+                    INSERT INTO users (
+                        user_id, username, email, password_hash,
+                        display_name, role, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    user_id,
+                    username,
+                    email,
+                    password_hash,
+                    display_name or username,
+                    role.value,
+                    UserStatus.ACTIVE.value,
+                    now,
+                    now
+                ))
+                
+                conn.commit()
+                
+                self.logger.info(
+                    f"用户创建成功 | user_id: {user_id} | username: {username}",
+                    user_id=user_id
+                )
+                return True
+        
+        except sqlite3.IntegrityError as e:
+            if "username" in str(e):
+                self.logger.error(f"用户名已存在: {username}")
+                raise DatabaseError(f"用户名已存在: {username}")
+            elif "email" in str(e):
+                self.logger.error(f"邮箱已被注册: {email}")
+                raise DatabaseError(f"邮箱已被注册: {email}")
+            else:
+                self.logger.error(f"用户 ID 已存在: {user_id}")
+                raise DatabaseError(f"用户 ID 已存在: {user_id}")
+        except Exception as e:
+            self.logger.error(f"创建用户失败: {e}")
+            raise DatabaseError(f"创建用户失败: {e}")
+    
+    def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        通过用户 ID 获取用户信息
+        
+        Args:
+            user_id: 用户 ID
+            
+        Returns:
+            用户信息字典，不存在则返回 None
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT * FROM users WHERE user_id = ?
+                """, (user_id,))
+                
+                row = cursor.fetchone()
+                
+                if row:
+                    return dict(row)
+                return None
+        
+        except Exception as e:
+            self.logger.error(f"获取用户失败: {e}", user_id=user_id)
+            raise DatabaseError(f"获取用户失败: {e}")
+    
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        """
+        通过用户名获取用户信息
+        
+        Args:
+            username: 用户名
+            
+        Returns:
+            用户信息字典，不存在则返回 None
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT * FROM users WHERE username = ?
+                """, (username,))
+                
+                row = cursor.fetchone()
+                
+                if row:
+                    return dict(row)
+                return None
+        
+        except Exception as e:
+            self.logger.error(f"获取用户失败: {e}")
+            raise DatabaseError(f"获取用户失败: {e}")
+    
+    def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """
+        通过邮箱获取用户信息
+        
+        Args:
+            email: 邮箱
+            
+        Returns:
+            用户信息字典，不存在则返回 None
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT * FROM users WHERE email = ?
+                """, (email,))
+                
+                row = cursor.fetchone()
+                
+                if row:
+                    return dict(row)
+                return None
+        
+        except Exception as e:
+            self.logger.error(f"获取用户失败: {e}")
+            raise DatabaseError(f"获取用户失败: {e}")
+    
+    def update_user_last_login(self, user_id: str) -> bool:
+        """
+        更新用户最后登录时间
+        
+        Args:
+            user_id: 用户 ID
+            
+        Returns:
+            是否更新成功
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                now = datetime.now().isoformat()
+                
+                cursor.execute("""
+                    UPDATE users 
+                    SET last_login_at = ?, updated_at = ?
+                    WHERE user_id = ?
+                """, (now, now, user_id))
+                
+                conn.commit()
+                
+                return cursor.rowcount > 0
+        
+        except Exception as e:
+            self.logger.error(f"更新登录时间失败: {e}", user_id=user_id)
+            raise DatabaseError(f"更新登录时间失败: {e}")
+    
+    def update_user_password(self, user_id: str, password_hash: str) -> bool:
+        """
+        更新用户密码
+        
+        Args:
+            user_id: 用户 ID
+            password_hash: 新密码哈希
+            
+        Returns:
+            是否更新成功
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                now = datetime.now().isoformat()
+                
+                cursor.execute("""
+                    UPDATE users 
+                    SET password_hash = ?, updated_at = ?
+                    WHERE user_id = ?
+                """, (password_hash, now, user_id))
+                
+                conn.commit()
+                
+                self.logger.info(f"用户密码更新成功 | user_id: {user_id}", user_id=user_id)
+                return cursor.rowcount > 0
+        
+        except Exception as e:
+            self.logger.error(f"更新密码失败: {e}", user_id=user_id)
+            raise DatabaseError(f"更新密码失败: {e}")
+    
+    def update_user_profile(
+        self,
+        user_id: str,
+        display_name: Optional[str] = None,
+        email: Optional[str] = None
+    ) -> bool:
+        """
+        更新用户资料
+        
+        Args:
+            user_id: 用户 ID
+            display_name: 显示名称（可选）
+            email: 邮箱（可选）
+            
+        Returns:
+            是否更新成功
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                now = datetime.now().isoformat()
+                
+                updates = ["updated_at = ?"]
+                params = [now]
+                
+                if display_name is not None:
+                    updates.append("display_name = ?")
+                    params.append(display_name)
+                
+                if email is not None:
+                    updates.append("email = ?")
+                    params.append(email)
+                
+                params.append(user_id)
+                
+                cursor.execute(f"""
+                    UPDATE users 
+                    SET {', '.join(updates)}
+                    WHERE user_id = ?
+                """, params)
+                
+                conn.commit()
+                
+                return cursor.rowcount > 0
+        
+        except sqlite3.IntegrityError:
+            self.logger.error(f"邮箱已被使用: {email}")
+            raise DatabaseError(f"邮箱已被使用: {email}")
+        except Exception as e:
+            self.logger.error(f"更新用户资料失败: {e}", user_id=user_id)
+            raise DatabaseError(f"更新用户资料失败: {e}")
+    
+    def update_user_status(self, user_id: str, status: UserStatus) -> bool:
+        """
+        更新用户状态
+        
+        Args:
+            user_id: 用户 ID
+            status: 新状态
+            
+        Returns:
+            是否更新成功
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                now = datetime.now().isoformat()
+                
+                cursor.execute("""
+                    UPDATE users 
+                    SET status = ?, updated_at = ?
+                    WHERE user_id = ?
+                """, (status.value, now, user_id))
+                
+                conn.commit()
+                
+                self.logger.info(
+                    f"用户状态更新 | user_id: {user_id} | status: {status.value}",
+                    user_id=user_id
+                )
+                return cursor.rowcount > 0
+        
+        except Exception as e:
+            self.logger.error(f"更新用户状态失败: {e}", user_id=user_id)
+            raise DatabaseError(f"更新用户状态失败: {e}")
+    
+    def list_users(
+        self,
+        status: Optional[UserStatus] = None,
+        role: Optional[UserRole] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """
+        列出用户
+        
+        Args:
+            status: 按状态过滤（可选）
+            role: 按角色过滤（可选）
+            limit: 返回数量限制
+            offset: 偏移量
+            
+        Returns:
+            用户列表（不含密码）
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                query = """
+                    SELECT user_id, username, email, display_name, 
+                           role, status, created_at, updated_at, last_login_at 
+                    FROM users WHERE 1=1
+                """
+                params = []
+                
+                if status:
+                    query += " AND status = ?"
+                    params.append(status.value)
+                
+                if role:
+                    query += " AND role = ?"
+                    params.append(role.value)
+                
+                query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+                
+                cursor.execute(query, params)
+                
+                return [dict(row) for row in cursor.fetchall()]
+        
+        except Exception as e:
+            self.logger.error(f"列出用户失败: {e}")
+            raise DatabaseError(f"列出用户失败: {e}")
+    
+    def delete_user(self, user_id: str) -> bool:
+        """
+        删除用户
+        
+        Args:
+            user_id: 用户 ID
+            
+        Returns:
+            是否删除成功
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    DELETE FROM users WHERE user_id = ?
+                """, (user_id,))
+                
+                conn.commit()
+                
+                if cursor.rowcount > 0:
+                    self.logger.info(f"用户删除成功 | user_id: {user_id}", user_id=user_id)
+                    return True
+                else:
+                    self.logger.warning(f"用户不存在 | user_id: {user_id}", user_id=user_id)
+                    return False
+        
+        except Exception as e:
+            self.logger.error(f"删除用户失败: {e}", user_id=user_id)
+            raise DatabaseError(f"删除用户失败: {e}")
+    
+    # ==================== 用户任务相关方法 ====================
+    
+    def create_task_with_user(
+        self,
+        task_id: str,
+        user_id: str,
+        task_type: TaskType,
+        parameters: Dict[str, Any]
+    ) -> bool:
+        """
+        创建带用户关联的任务
+        
+        Args:
+            task_id: 任务唯一标识
+            user_id: 用户 ID
+            task_type: 任务类型
+            parameters: 任务参数
+            
+        Returns:
+            是否创建成功
+            
+        Raises:
+            DatabaseError: 创建失败
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                now = datetime.now().isoformat()
+                
+                cursor.execute("""
+                    INSERT INTO tasks (
+                        task_id, user_id, task_type, status, parameters,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    task_id,
+                    user_id,
+                    task_type.value,
+                    TaskStatus.PENDING.value,
+                    json.dumps(parameters, ensure_ascii=False),
+                    now,
+                    now
+                ))
+                
+                conn.commit()
+                
+                self.logger.info(
+                    f"任务创建成功 | task_id: {task_id} | user_id: {user_id} | type: {task_type.value}",
+                    task_id=task_id,
+                    user_id=user_id
+                )
+                return True
+        
+        except sqlite3.IntegrityError:
+            self.logger.error(f"任务 ID 已存在: {task_id}", task_id=task_id)
+            raise DatabaseError(f"任务 ID 已存在: {task_id}")
+        except Exception as e:
+            self.logger.error(f"创建任务失败: {e}", task_id=task_id)
+            raise DatabaseError(f"创建任务失败: {e}")
+    
+    def list_user_tasks(
+        self,
+        user_id: str,
+        status: Optional[TaskStatus] = None,
+        task_type: Optional[TaskType] = None,
+        limit: int = 100,
+        offset: int = 0,
+        order_by: str = "created_at",
+        order_dir: str = "desc"
+    ) -> List[Dict[str, Any]]:
+        """
+        列出用户的任务
+        
+        Args:
+            user_id: 用户 ID
+            status: 按状态过滤（可选）
+            task_type: 按类型过滤（可选）
+            limit: 返回数量限制
+            offset: 偏移量
+            order_by: 排序字段
+            order_dir: 排序方向（asc/desc）
+            
+        Returns:
+            任务列表
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                query = "SELECT * FROM tasks WHERE user_id = ?"
+                params = [user_id]
+                
+                if status:
+                    query += " AND status = ?"
+                    params.append(status.value)
+                
+                if task_type:
+                    query += " AND task_type = ?"
+                    params.append(task_type.value)
+                
+                # 验证排序字段和方向
+                valid_order_fields = ["created_at", "updated_at", "task_id", "status"]
+                if order_by not in valid_order_fields:
+                    order_by = "created_at"
+                
+                order_dir = "DESC" if order_dir.lower() == "desc" else "ASC"
+                
+                query += f" ORDER BY {order_by} {order_dir} LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+                
+                cursor.execute(query, params)
+                
+                rows = cursor.fetchall()
+                
+                tasks = []
+                for row in rows:
+                    task = dict(row)
+                    # 反序列化 JSON 字段
+                    if task['parameters']:
+                        task['parameters'] = json.loads(task['parameters'])
+                    if task['result']:
+                        task['result'] = json.loads(task['result'])
+                    if task['checkpoint']:
+                        task['checkpoint'] = json.loads(task['checkpoint'])
+                    tasks.append(task)
+                
+                return tasks
+        
+        except Exception as e:
+            self.logger.error(f"列出用户任务失败: {e}", user_id=user_id)
+            raise DatabaseError(f"列出用户任务失败: {e}")
+    
+    def count_user_tasks(
+        self,
+        user_id: str,
+        status: Optional[TaskStatus] = None,
+        task_type: Optional[TaskType] = None
+    ) -> int:
+        """
+        统计用户任务数量
+        
+        Args:
+            user_id: 用户 ID
+            status: 按状态过滤（可选）
+            task_type: 按类型过滤（可选）
+            
+        Returns:
+            任务数量
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                query = "SELECT COUNT(*) as count FROM tasks WHERE user_id = ?"
+                params = [user_id]
+                
+                if status:
+                    query += " AND status = ?"
+                    params.append(status.value)
+                
+                if task_type:
+                    query += " AND task_type = ?"
+                    params.append(task_type.value)
+                
+                cursor.execute(query, params)
+                result = cursor.fetchone()
+                
+                return result['count'] if result else 0
+        
+        except Exception as e:
+            self.logger.error(f"统计用户任务数量失败: {e}", user_id=user_id)
+            return 0
+    
+    def get_user_task_statistics(self, user_id: str) -> Dict[str, Any]:
+        """
+        获取用户任务统计信息
+        
+        Args:
+            user_id: 用户 ID
+            
+        Returns:
+            统计数据字典
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 总任务数
+                cursor.execute(
+                    "SELECT COUNT(*) as count FROM tasks WHERE user_id = ?",
+                    (user_id,)
+                )
+                total_count = cursor.fetchone()['count']
+                
+                # 各状态任务数
+                cursor.execute("""
+                    SELECT status, COUNT(*) as count 
+                    FROM tasks 
+                    WHERE user_id = ?
+                    GROUP BY status
+                """, (user_id,))
+                status_counts = {row['status']: row['count'] for row in cursor.fetchall()}
+                
+                # 各类型任务数
+                cursor.execute("""
+                    SELECT task_type, COUNT(*) as count 
+                    FROM tasks 
+                    WHERE user_id = ?
+                    GROUP BY task_type
+                """, (user_id,))
+                type_counts = {row['task_type']: row['count'] for row in cursor.fetchall()}
+                
+                return {
+                    "total_count": total_count,
+                    "status_counts": status_counts,
+                    "type_counts": type_counts,
+                }
+        
+        except Exception as e:
+            self.logger.error(f"获取用户任务统计失败: {e}", user_id=user_id)
             return {}
 
 

@@ -4,9 +4,10 @@ Dify API 客户端
 提供与 Dify 工作流 API 的交互接口。
 """
 
+import json
 import requests
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Generator, Optional
 
 from ..common.logger import get_logger
 
@@ -43,6 +44,114 @@ class DifyClient:
             raise DifyAPIError("Dify API 配置不完整，请检查 api_endpoint 和 api_key")
         
         self.logger.info(f"Dify 客户端初始化 | endpoint: {self.api_endpoint}")
+    
+    def call_workflow_streaming(
+        self,
+        inputs: Dict[str, Any],
+        user: str = "mcp-agent"
+    ) -> Generator[str, None, None]:
+        """
+        调用 Dify 工作流（流式模式）
+        
+        Args:
+            inputs: 工作流输入参数
+            user: 用户标识
+            
+        Yields:
+            流式返回的文本块
+            
+        Raises:
+            DifyAPIError: API 调用失败
+        """
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "inputs": inputs,
+            "response_mode": "streaming",
+            "user": user
+        }
+        
+        self.logger.info("[Dify Streaming] 开始流式调用")
+        
+        try:
+            response = requests.post(
+                self.api_endpoint,
+                headers=headers,
+                json=payload,
+                timeout=self.timeout,
+                stream=True
+            )
+            
+            if response.status_code != 200:
+                error_msg = f"Dify API 返回错误 | 状态码: {response.status_code}"
+                self.logger.error(error_msg)
+                raise DifyAPIError(error_msg)
+            
+            # 解析 SSE 流
+            for line in response.iter_lines():
+                if line:
+                    line_str = line.decode('utf-8')
+                    
+                    # SSE 格式: data: {...}
+                    if line_str.startswith('data: '):
+                        data_str = line_str[6:]  # 去掉 "data: " 前缀
+                        
+                        try:
+                            data = json.loads(data_str)
+                            event_type = data.get("event")
+                            
+                            # 处理不同事件类型
+                            if event_type == "text_chunk":
+                                # 文本块事件
+                                text = data.get("data", {}).get("text", "")
+                                if text:
+                                    yield text
+                            
+                            elif event_type == "message":
+                                # 完整消息事件（某些工作流使用）
+                                answer = data.get("answer", "")
+                                if answer:
+                                    yield answer
+                            
+                            elif event_type == "workflow_finished":
+                                # 工作流完成
+                                outputs = data.get("data", {}).get("outputs", {})
+                                # 尝试提取输出文本
+                                for field in ["text", "output", "result", "reply"]:
+                                    if field in outputs:
+                                        text = outputs[field]
+                                        if text and isinstance(text, str):
+                                            yield text
+                                        break
+                                self.logger.info("[Dify Streaming] 工作流完成")
+                            
+                            elif event_type == "error":
+                                error_msg = data.get("message", "未知错误")
+                                self.logger.error(f"[Dify Streaming] 错误: {error_msg}")
+                                raise DifyAPIError(error_msg)
+                            
+                            elif event_type in ["node_started", "node_finished", "workflow_started"]:
+                                # 节点事件，忽略
+                                pass
+                            
+                            else:
+                                self.logger.debug(f"[Dify Streaming] 未知事件: {event_type}")
+                        
+                        except json.JSONDecodeError as e:
+                            self.logger.warning(f"[Dify Streaming] JSON 解析失败: {data_str[:100]}")
+            
+            self.logger.info("[Dify Streaming] 流式调用结束")
+        
+        except requests.Timeout:
+            self.logger.error("[Dify Streaming] 请求超时")
+            raise DifyAPIError("请求超时")
+        
+        except requests.RequestException as e:
+            self.logger.error(f"[Dify Streaming] 请求异常: {e}")
+            raise DifyAPIError(f"请求异常: {str(e)}")
     
     def call_workflow(
         self,

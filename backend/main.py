@@ -187,7 +187,8 @@ def _sync_initialize_application():
         task_manager=task_manager,
         workflow_orchestrator=workflow_orchestrator,
         logger=logger,
-        config=web_config.dict()
+        config=web_config.dict(),
+        dify_config=dify_config.dict()  # 传递 Dify 配置用于聊天服务
     )
     print("[OK] Agent HTTP 服务初始化完成")
     
@@ -334,7 +335,8 @@ async def initialize_application():
         task_manager=task_manager,
         workflow_orchestrator=workflow_orchestrator,
         logger=logger,
-        config=web_config.dict()
+        config=web_config.dict(),
+        dify_config=dify_config.dict()  # 传递 Dify 配置用于聊天服务
     )
     print("[OK] Agent HTTP 服务初始化完成")
     

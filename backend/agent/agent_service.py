@@ -5,18 +5,21 @@ Agent HTTP 服务
 """
 
 import asyncio
+import json
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from backend.agent.task_manager import TaskManager, TaskState
 from backend.agent.workflow_orchestrator import WorkflowOrchestrator
+from backend.agent.chat_agent import ChatService
 from backend.common.logger import Logger
 from backend.common.database import TaskType, TaskStatus
+from backend.auth import auth_router
 
 
 # 请求/响应模型
@@ -34,6 +37,18 @@ class TaskResponse(BaseModel):
     data: Optional[Dict[str, Any]] = None
 
 
+# 聊天请求/响应模型
+class ChatMessageRequest(BaseModel):
+    message: str
+    conversation_id: Optional[str] = None
+
+
+class ChatResponse(BaseModel):
+    success: bool
+    data: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
+
+
 class AgentService:
     """
     Agent HTTP 服务
@@ -43,6 +58,7 @@ class AgentService:
     - WebSocket 实时推送（任务进度、日志）
     - 文件上传处理
     - CORS 支持
+    - 聊天对话服务
     """
     
     def __init__(
@@ -50,7 +66,8 @@ class AgentService:
         task_manager: TaskManager,
         workflow_orchestrator: WorkflowOrchestrator,
         logger: Logger,
-        config: Dict[str, Any]
+        config: Dict[str, Any],
+        dify_config: Optional[Dict[str, Any]] = None
     ):
         self.task_manager = task_manager
         self.workflow_orchestrator = workflow_orchestrator
@@ -76,12 +93,28 @@ class AgentService:
         # WebSocket 连接管理
         self.ws_connections: List[WebSocket] = []
         
+        # 初始化聊天服务
+        self.chat_service: Optional[ChatService] = None
+        if dify_config:
+            try:
+                self.chat_service = ChatService(dify_config)
+                self.logger.info("ChatService 初始化成功", component="AgentService")
+            except Exception as e:
+                self.logger.warning(
+                    f"ChatService 初始化失败，聊天功能不可用: {str(e)}",
+                    component="AgentService"
+                )
+        
         # 注册路由
         self._register_routes()
         
+        # 注册认证路由
+        self.app.include_router(auth_router)
+        
         self.logger.info(
             "AgentService 初始化完成 | "
-            f"CORS: {config.get('cors_origins', ['*'])}",
+            f"CORS: {config.get('cors_origins', ['*'])} | "
+            f"聊天服务: {'已启用' if self.chat_service else '未启用'}",
             component="AgentService"
         )
     
@@ -654,6 +687,156 @@ class AgentService:
             except Exception as e:
                 self.logger.error(f"下载报告失败: {str(e)}", exc_info=True)
                 raise HTTPException(status_code=500, detail=str(e))
+        
+        # ==================== 聊天相关路由 ====================
+        
+        @self.app.post("/api/chat/send", response_model=ChatResponse)
+        async def send_chat_message(request: ChatMessageRequest):
+            """发送聊天消息"""
+            try:
+                if not self.chat_service:
+                    return ChatResponse(
+                        success=False,
+                        message="聊天服务未启用，请检查 Dify 配置"
+                    )
+                
+                self.logger.info(
+                    f"[聊天] 收到消息 | conversation_id: {request.conversation_id} | 长度: {len(request.message)}",
+                    conversation_id=request.conversation_id
+                )
+                
+                result = self.chat_service.send_message(
+                    message=request.message,
+                    conversation_id=request.conversation_id
+                )
+                
+                return ChatResponse(
+                    success=True,
+                    data=result
+                )
+            
+            except Exception as e:
+                self.logger.error(f"聊天消息处理失败: {str(e)}", exc_info=True)
+                return ChatResponse(
+                    success=False,
+                    message=f"处理失败: {str(e)}"
+                )
+        
+        @self.app.post("/api/chat/stream")
+        async def send_chat_message_stream(request: ChatMessageRequest):
+            """发送聊天消息（SSE 流式响应）"""
+            if not self.chat_service:
+                return ChatResponse(
+                    success=False,
+                    message="聊天服务未启用，请检查 Dify 配置"
+                )
+            
+            self.logger.info(
+                f"[聊天SSE] 收到消息 | conversation_id: {request.conversation_id} | 长度: {len(request.message)}",
+                conversation_id=request.conversation_id
+            )
+            
+            async def generate_sse():
+                """生成 SSE 事件流"""
+                try:
+                    for event in self.chat_service.send_message_streaming(
+                        message=request.message,
+                        conversation_id=request.conversation_id
+                    ):
+                        event_type = event.get("type", "chunk")
+                        data = json.dumps(event, ensure_ascii=False)
+                        yield f"event: {event_type}\ndata: {data}\n\n"
+                        # 小延迟确保前端能及时处理
+                        await asyncio.sleep(0)
+                except Exception as e:
+                    self.logger.error(f"[聊天SSE] 流式生成失败: {str(e)}", exc_info=True)
+                    error_data = json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False)
+                    yield f"event: error\ndata: {error_data}\n\n"
+            
+            return StreamingResponse(
+                generate_sse(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        
+        @self.app.get("/api/chat/history/{conversation_id}", response_model=ChatResponse)
+        async def get_chat_history(conversation_id: str, limit: Optional[int] = None):
+            """获取对话历史"""
+            try:
+                if not self.chat_service:
+                    return ChatResponse(
+                        success=False,
+                        message="聊天服务未启用"
+                    )
+                
+                result = self.chat_service.get_history(conversation_id, limit)
+                
+                return ChatResponse(
+                    success=result.get("success", False),
+                    data=result if result.get("success") else None,
+                    message=result.get("error")
+                )
+            
+            except Exception as e:
+                self.logger.error(f"获取对话历史失败: {str(e)}", exc_info=True)
+                return ChatResponse(
+                    success=False,
+                    message=f"获取失败: {str(e)}"
+                )
+        
+        @self.app.post("/api/chat/clear/{conversation_id}", response_model=ChatResponse)
+        async def clear_chat(conversation_id: str):
+            """清空对话历史"""
+            try:
+                if not self.chat_service:
+                    return ChatResponse(
+                        success=False,
+                        message="聊天服务未启用"
+                    )
+                
+                result = self.chat_service.clear_conversation(conversation_id)
+                
+                return ChatResponse(
+                    success=result.get("success", False),
+                    message=result.get("message") or result.get("error")
+                )
+            
+            except Exception as e:
+                self.logger.error(f"清空对话失败: {str(e)}", exc_info=True)
+                return ChatResponse(
+                    success=False,
+                    message=f"清空失败: {str(e)}"
+                )
+        
+        @self.app.get("/api/chat/conversations", response_model=ChatResponse)
+        async def list_conversations():
+            """列出所有对话"""
+            try:
+                if not self.chat_service:
+                    return ChatResponse(
+                        success=False,
+                        message="聊天服务未启用"
+                    )
+                
+                result = self.chat_service.list_conversations()
+                
+                return ChatResponse(
+                    success=True,
+                    data=result
+                )
+            
+            except Exception as e:
+                self.logger.error(f"列出对话失败: {str(e)}", exc_info=True)
+                return ChatResponse(
+                    success=False,
+                    message=f"获取失败: {str(e)}"
+                )
+        
+        # ==================== WebSocket ====================
         
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
