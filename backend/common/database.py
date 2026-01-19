@@ -141,6 +141,52 @@ class Database:
                 ON users(email)
             """)
             
+            # 创建对话表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS conversations (
+                    conversation_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            """)
+            
+            # 创建对话索引
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversation_user_id 
+                ON conversations(user_id)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversation_created_at 
+                ON conversations(created_at)
+            """)
+            
+            # 创建消息表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    message_id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
+                )
+            """)
+            
+            # 创建消息索引
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_message_conversation_id 
+                ON messages(conversation_id)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_message_created_at 
+                ON messages(created_at)
+            """)
+            
             # 创建任务表
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -1275,6 +1321,321 @@ class Database:
         except Exception as e:
             self.logger.error(f"获取用户任务统计失败: {e}", user_id=user_id)
             return {}
+    
+    # ==================== 对话相关方法 ====================
+    
+    def create_conversation(
+        self,
+        conversation_id: str,
+        user_id: str,
+        title: str
+    ) -> bool:
+        """
+        创建新对话
+        
+        Args:
+            conversation_id: 对话唯一标识
+            user_id: 用户 ID
+            title: 对话标题
+            
+        Returns:
+            是否创建成功
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                now = datetime.now().isoformat()
+                
+                cursor.execute("""
+                    INSERT INTO conversations (
+                        conversation_id, user_id, title, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                """, (conversation_id, user_id, title, now, now))
+                
+                conn.commit()
+                
+                self.logger.info(
+                    f"对话创建成功 | conversation_id: {conversation_id} | user_id: {user_id}",
+                    conversation_id=conversation_id,
+                    user_id=user_id
+                )
+                return True
+        
+        except sqlite3.IntegrityError:
+            self.logger.error(f"对话 ID 已存在: {conversation_id}")
+            raise DatabaseError(f"对话 ID 已存在: {conversation_id}")
+        except Exception as e:
+            self.logger.error(f"创建对话失败: {e}")
+            raise DatabaseError(f"创建对话失败: {e}")
+    
+    def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """
+        获取对话信息
+        
+        Args:
+            conversation_id: 对话 ID
+            
+        Returns:
+            对话信息字典，不存在则返回 None
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT * FROM conversations WHERE conversation_id = ?
+                """, (conversation_id,))
+                
+                row = cursor.fetchone()
+                
+                if row:
+                    return dict(row)
+                return None
+        
+        except Exception as e:
+            self.logger.error(f"获取对话失败: {e}")
+            raise DatabaseError(f"获取对话失败: {e}")
+    
+    def update_conversation_title(
+        self,
+        conversation_id: str,
+        title: str
+    ) -> bool:
+        """
+        更新对话标题
+        
+        Args:
+            conversation_id: 对话 ID
+            title: 新标题
+            
+        Returns:
+            是否更新成功
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                now = datetime.now().isoformat()
+                
+                cursor.execute("""
+                    UPDATE conversations 
+                    SET title = ?, updated_at = ?
+                    WHERE conversation_id = ?
+                """, (title, now, conversation_id))
+                
+                conn.commit()
+                
+                return cursor.rowcount > 0
+        
+        except Exception as e:
+            self.logger.error(f"更新对话标题失败: {e}")
+            raise DatabaseError(f"更新对话标题失败: {e}")
+    
+    def update_conversation_timestamp(self, conversation_id: str) -> bool:
+        """
+        更新对话时间戳（有新消息时调用）
+        
+        Args:
+            conversation_id: 对话 ID
+            
+        Returns:
+            是否更新成功
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                now = datetime.now().isoformat()
+                
+                cursor.execute("""
+                    UPDATE conversations 
+                    SET updated_at = ?
+                    WHERE conversation_id = ?
+                """, (now, conversation_id))
+                
+                conn.commit()
+                
+                return cursor.rowcount > 0
+        
+        except Exception as e:
+            self.logger.error(f"更新对话时间戳失败: {e}")
+            return False
+    
+    def list_user_conversations(
+        self,
+        user_id: str,
+        limit: int = 100,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """
+        列出用户的对话列表
+        
+        Args:
+            user_id: 用户 ID
+            limit: 返回数量限制
+            offset: 偏移量
+            
+        Returns:
+            对话列表（按更新时间倒序）
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT * FROM conversations 
+                    WHERE user_id = ?
+                    ORDER BY updated_at DESC
+                    LIMIT ? OFFSET ?
+                """, (user_id, limit, offset))
+                
+                return [dict(row) for row in cursor.fetchall()]
+        
+        except Exception as e:
+            self.logger.error(f"列出用户对话失败: {e}", user_id=user_id)
+            raise DatabaseError(f"列出用户对话失败: {e}")
+    
+    def delete_conversation(self, conversation_id: str) -> bool:
+        """
+        删除对话（级联删除消息）
+        
+        Args:
+            conversation_id: 对话 ID
+            
+        Returns:
+            是否删除成功
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    DELETE FROM conversations WHERE conversation_id = ?
+                """, (conversation_id,))
+                
+                conn.commit()
+                
+                if cursor.rowcount > 0:
+                    self.logger.info(
+                        f"对话删除成功 | conversation_id: {conversation_id}",
+                        conversation_id=conversation_id
+                    )
+                    return True
+                else:
+                    self.logger.warning(f"对话不存在 | conversation_id: {conversation_id}")
+                    return False
+        
+        except Exception as e:
+            self.logger.error(f"删除对话失败: {e}")
+            raise DatabaseError(f"删除对话失败: {e}")
+    
+    # ==================== 消息相关方法 ====================
+    
+    def create_message(
+        self,
+        message_id: str,
+        conversation_id: str,
+        role: str,
+        content: str
+    ) -> bool:
+        """
+        创建新消息
+        
+        Args:
+            message_id: 消息唯一标识
+            conversation_id: 对话 ID
+            role: 角色（user/assistant）
+            content: 消息内容
+            
+        Returns:
+            是否创建成功
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                now = datetime.now().isoformat()
+                
+                cursor.execute("""
+                    INSERT INTO messages (
+                        message_id, conversation_id, role, content, created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                """, (message_id, conversation_id, role, content, now))
+                
+                conn.commit()
+                
+                # 更新对话时间戳
+                self.update_conversation_timestamp(conversation_id)
+                
+                return True
+        
+        except sqlite3.IntegrityError:
+            self.logger.error(f"消息 ID 已存在: {message_id}")
+            raise DatabaseError(f"消息 ID 已存在: {message_id}")
+        except Exception as e:
+            self.logger.error(f"创建消息失败: {e}")
+            raise DatabaseError(f"创建消息失败: {e}")
+    
+    def list_conversation_messages(
+        self,
+        conversation_id: str,
+        limit: int = 100,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """
+        列出对话的消息列表
+        
+        Args:
+            conversation_id: 对话 ID
+            limit: 返回数量限制
+            offset: 偏移量
+            
+        Returns:
+            消息列表（按创建时间正序）
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT * FROM messages 
+                    WHERE conversation_id = ?
+                    ORDER BY created_at ASC
+                    LIMIT ? OFFSET ?
+                """, (conversation_id, limit, offset))
+                
+                return [dict(row) for row in cursor.fetchall()]
+        
+        except Exception as e:
+            self.logger.error(f"列出对话消息失败: {e}")
+            raise DatabaseError(f"列出对话消息失败: {e}")
+    
+    def count_conversation_messages(self, conversation_id: str) -> int:
+        """
+        统计对话消息数量
+        
+        Args:
+            conversation_id: 对话 ID
+            
+        Returns:
+            消息数量
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT COUNT(*) as count FROM messages 
+                    WHERE conversation_id = ?
+                """, (conversation_id,))
+                
+                result = cursor.fetchone()
+                return result['count'] if result else 0
+        
+        except Exception as e:
+            self.logger.error(f"统计对话消息数量失败: {e}")
+            return 0
 
 
 # 全局数据库实例

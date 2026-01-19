@@ -12,6 +12,7 @@ from datetime import datetime
 
 from backend.common.dify_client import DifyClient, DifyAPIError
 from backend.common.logger import get_logger
+from backend.common.database import Database
 
 
 class Message:
@@ -252,15 +253,17 @@ class ChatService:
     管理多个对话会话，提供高层 API 接口。
     """
     
-    def __init__(self, dify_config: Dict[str, Any], system_prompt: Optional[str] = None):
+    def __init__(self, dify_config: Dict[str, Any], database: Database, system_prompt: Optional[str] = None):
         """
         初始化聊天服务
         
         Args:
             dify_config: Dify 配置
+            database: 数据库实例
             system_prompt: 自定义系统提示词
         """
         self.logger = get_logger()
+        self.database = database
         
         # 初始化 Dify 客户端
         self.dify_client = DifyClient(dify_config)
@@ -268,7 +271,7 @@ class ChatService:
         # 初始化聊天 Agent
         self.chat_agent = ChatAgent(self.dify_client, system_prompt)
         
-        # 会话存储（内存中）
+        # 会话存储（内存中，保留用于上下文管理）
         self.conversations: Dict[str, Conversation] = {}
         
         # 配置
@@ -276,9 +279,36 @@ class ChatService:
         
         self.logger.info("ChatService 初始化完成")
     
+    def _restore_conversation(self, conversation_id: str) -> Optional[Conversation]:
+        """从数据库恢复会话到内存"""
+        try:
+            db_conv = self.database.get_conversation(conversation_id)
+            if not db_conv:
+                return None
+            
+            conversation = Conversation(conversation_id)
+            # 加载最近的历史消息作为上下文
+            messages = self.database.list_conversation_messages(conversation_id, limit=self.max_context_messages)
+            
+            for msg in messages:
+                conversation.add_message(Message(
+                    name="User" if msg['role'] == "user" else "Assistant",
+                    role=msg['role'],
+                    content=msg['content'],
+                    timestamp=msg['created_at']
+                ))
+            
+            self.conversations[conversation_id] = conversation
+            self.logger.info(f"[ChatService] 从数据库恢复会话 | conversation_id: {conversation_id} | 消息数: {len(messages)}")
+            return conversation
+        except Exception as e:
+            self.logger.error(f"[ChatService] 恢复会话失败: {str(e)}", exc_info=True)
+            return None
+
     def send_message(
         self,
         message: str,
+        user_id: str,
         conversation_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -286,6 +316,7 @@ class ChatService:
         
         Args:
             message: 用户消息
+            user_id: 用户 ID
             conversation_id: 会话ID（可选，为空时创建新会话）
             
         Returns:
@@ -298,13 +329,38 @@ class ChatService:
         # 获取或创建会话
         if conversation_id and conversation_id in self.conversations:
             conversation = self.conversations[conversation_id]
+        elif conversation_id:
+            # 尝试从数据库恢复
+            conversation = self._restore_conversation(conversation_id)
+            if not conversation:
+                # 如果数据库也没有，则按照原有逻辑处理（或者报错，这里选择创建新会话以保持健壮性）
+                conversation = Conversation(conversation_id)
+                self.conversations[conversation_id] = conversation
+                self.logger.info(f"[ChatService] 创建新内存会话(ID已提供) | conversation_id: {conversation_id}")
         else:
+            # 创建全新会话
             conversation_id = str(uuid.uuid4())
+            # 创建数据库对话
+            self.database.create_conversation(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                title=message[:50]  # 使用前50个字符作为标题
+            )
+            
             conversation = Conversation(conversation_id)
             self.conversations[conversation_id] = conversation
-            self.logger.info(f"[ChatService] 创建新会话 | conversation_id: {conversation_id}")
+            self.logger.info(f"[ChatService] 初始化新会话 | conversation_id: {conversation_id}")
         
-        # 添加用户消息
+        # 保存用户消息到数据库
+        user_message_id = str(uuid.uuid4())
+        self.database.create_message(
+            message_id=user_message_id,
+            conversation_id=conversation_id,
+            role="user",
+            content=message
+        )
+        
+        # 添加用户消息到内存上下文
         user_msg = Message(name="User", role="user", content=message)
         conversation.add_message(user_msg)
         
@@ -314,7 +370,16 @@ class ChatService:
         # 生成回复
         reply_content = self.chat_agent.reply(message, context)
         
-        # 添加助手回复
+        # 保存助手消息到数据库
+        assistant_message_id = str(uuid.uuid4())
+        self.database.create_message(
+            message_id=assistant_message_id,
+            conversation_id=conversation_id,
+            role="assistant",
+            content=reply_content
+        )
+        
+        # 添加助手回复到内存上下文
         assistant_msg = Message(name="Assistant", role="assistant", content=reply_content)
         conversation.add_message(assistant_msg)
         
@@ -331,6 +396,7 @@ class ChatService:
     def send_message_streaming(
         self,
         message: str,
+        user_id: str,
         conversation_id: Optional[str] = None
     ) -> Generator[Dict[str, Any], None, None]:
         """
@@ -338,6 +404,7 @@ class ChatService:
         
         Args:
             message: 用户消息
+            user_id: 用户 ID
             conversation_id: 会话ID（可选，为空时创建新会话）
             
         Yields:
@@ -350,11 +417,34 @@ class ChatService:
         # 获取或创建会话
         if conversation_id and conversation_id in self.conversations:
             conversation = self.conversations[conversation_id]
+        elif conversation_id:
+            # 尝试从数据库恢复
+            conversation = self._restore_conversation(conversation_id)
+            if not conversation:
+                conversation = Conversation(conversation_id)
+                self.conversations[conversation_id] = conversation
+                self.logger.info(f"[ChatService] 创建新内存会话(ID已提供) | conversation_id: {conversation_id}")
         else:
             conversation_id = str(uuid.uuid4())
+            # 创建数据库对话
+            self.database.create_conversation(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                title=message[:50]
+            )
+            
             conversation = Conversation(conversation_id)
             self.conversations[conversation_id] = conversation
-            self.logger.info(f"[ChatService] 创建新会话 | conversation_id: {conversation_id}")
+            self.logger.info(f"[ChatService] 初始化新会话 | conversation_id: {conversation_id}")
+        
+        # 保存用户消息到数据库
+        user_message_id = str(uuid.uuid4())
+        self.database.create_message(
+            message_id=user_message_id,
+            conversation_id=conversation_id,
+            role="user",
+            content=message
+        )
         
         # 添加用户消息
         user_msg = Message(name="User", role="user", content=message)
@@ -380,8 +470,19 @@ class ChatService:
                 "content": chunk
             }
         
-        # 添加助手回复到会话
+        # 回复内容
         reply_content = "".join(full_reply)
+        
+        # 保存助手消息到数据库
+        assistant_message_id = str(uuid.uuid4())
+        self.database.create_message(
+            message_id=assistant_message_id,
+            conversation_id=conversation_id,
+            role="assistant",
+            content=reply_content
+        )
+        
+        # 添加助手回复到会话
         assistant_msg = Message(name="Assistant", role="assistant", content=reply_content)
         conversation.add_message(assistant_msg)
         
@@ -394,100 +495,4 @@ class ChatService:
             "type": "done",
             "conversation_id": conversation_id,
             "timestamp": assistant_msg.timestamp
-        }
-    
-    def get_history(self, conversation_id: str, limit: Optional[int] = None) -> Dict[str, Any]:
-        """
-        获取对话历史
-        
-        Args:
-            conversation_id: 会话ID
-            limit: 返回消息数量限制
-            
-        Returns:
-            对话历史
-        """
-        if conversation_id not in self.conversations:
-            return {
-                "success": False,
-                "error": "会话不存在"
-            }
-        
-        conversation = self.conversations[conversation_id]
-        
-        return {
-            "success": True,
-            "conversation_id": conversation_id,
-            "messages": conversation.get_history(limit),
-            "created_at": conversation.created_at,
-            "updated_at": conversation.updated_at
-        }
-    
-    def clear_conversation(self, conversation_id: str) -> Dict[str, Any]:
-        """
-        清空对话历史
-        
-        Args:
-            conversation_id: 会话ID
-            
-        Returns:
-            操作结果
-        """
-        if conversation_id not in self.conversations:
-            return {
-                "success": False,
-                "error": "会话不存在"
-            }
-        
-        self.conversations[conversation_id].clear()
-        self.logger.info(f"[ChatService] 清空会话 | conversation_id: {conversation_id}")
-        
-        return {
-            "success": True,
-            "message": "对话历史已清空"
-        }
-    
-    def delete_conversation(self, conversation_id: str) -> Dict[str, Any]:
-        """
-        删除会话
-        
-        Args:
-            conversation_id: 会话ID
-            
-        Returns:
-            操作结果
-        """
-        if conversation_id not in self.conversations:
-            return {
-                "success": False,
-                "error": "会话不存在"
-            }
-        
-        del self.conversations[conversation_id]
-        self.logger.info(f"[ChatService] 删除会话 | conversation_id: {conversation_id}")
-        
-        return {
-            "success": True,
-            "message": "会话已删除"
-        }
-    
-    def list_conversations(self) -> Dict[str, Any]:
-        """
-        列出所有会话
-        
-        Returns:
-            会话列表
-        """
-        conversations = []
-        for conv_id, conv in self.conversations.items():
-            conversations.append({
-                "conversation_id": conv_id,
-                "message_count": len(conv.messages),
-                "created_at": conv.created_at,
-                "updated_at": conv.updated_at
-            })
-        
-        return {
-            "success": True,
-            "conversations": conversations
         }

@@ -187,6 +187,7 @@ def _sync_initialize_application():
         task_manager=task_manager,
         workflow_orchestrator=workflow_orchestrator,
         logger=logger,
+        database=database,  # 传递数据库实例
         config=web_config.dict(),
         dify_config=dify_config.dict()  # 传递 Dify 配置用于聊天服务
     )
@@ -335,6 +336,7 @@ async def initialize_application():
         task_manager=task_manager,
         workflow_orchestrator=workflow_orchestrator,
         logger=logger,
+        database=database,  # 传递数据库实例
         config=web_config.dict(),
         dify_config=dify_config.dict()  # 传递 Dify 配置用于聊天服务
     )

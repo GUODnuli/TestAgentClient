@@ -1,284 +1,267 @@
 <template>
-  <div class="chat-page" :class="{ 'has-messages': hasMessages }">
-    <!-- 无对话时的居中布局 -->
-    <div v-if="!hasMessages" class="empty-state">
-      <h1 class="welcome-title">我现在能怎么帮您？</h1>
-      
-      <!-- 输入框容器 -->
-      <div class="prompt-input-container">
-        <div class="prompt-input-file-list" v-if="attachedFiles.length > 0">
-          <div 
-            v-for="(file, index) in attachedFiles" 
-            :key="index" 
-            class="file-item"
-          >
-            <span class="file-name">{{ file.name }}</span>
-            <button class="file-remove" @click="removeFile(index)">×</button>
-          </div>
-        </div>
-
-        <div class="prompt-input-input-area">
-          <textarea
-            ref="inputTextarea"
-            v-model="inputMessage"
-            placeholder="有什么我能帮您的吗？"
-            @input="adjustTextareaHeight"
-            @keydown="handleKeydown"
-            rows="1"
-          ></textarea>
-        </div>
-
-        <div class="prompt-input-action-bar">
-          <button class="action-btn add-btn" @click="handleAddClick" title="添加附件">
-            <el-icon><Plus /></el-icon>
-          </button>
-          <div class="spacer"></div>
-          <button 
-            class="action-btn send-btn" 
-            @click="sendMessage" 
-            :disabled="!inputMessage.trim() || loading"
-            title="发送消息"
-          >
-            <el-icon><Top /></el-icon>
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 有对话时的布局 -->
-    <template v-else>
-      <!-- 对话消息区域 -->
-      <div class="chat-messages" ref="messagesContainer">
-        <div 
-          v-for="(msg, index) in messages" 
-          :key="index" 
-          :class="['message', msg.role]"
-        >
-          <div class="message-content">
-            <div class="message-avatar">
-              {{ msg.role === 'user' ? 'U' : 'A' }}
+  <div class="chat-container-root">
+    <!-- 右侧聊天区域 -->
+    <main class="chat-main">
+      <div class="chat-container" :class="{ 'has-messages': hasMessages }">
+        <!-- 无对话时的居中布局 -->
+        <div v-if="!hasMessages" class="empty-state">
+          <h1 class="welcome-title">我现在能怎么帮您？</h1>
+          
+          <div class="prompt-input-container">
+            <div class="prompt-input-input-area">
+              <textarea
+                ref="inputTextarea"
+                v-model="inputMessage"
+                placeholder="有什么我能帮您的吗？"
+                @input="adjustTextareaHeight"
+                @keydown="handleKeydown"
+                rows="1"
+              ></textarea>
             </div>
-            <div class="message-text">
-              <template v-if="msg.content">{{ msg.content }}</template>
-              <span v-if="loading && msg.role === 'assistant' && index === messages.length - 1" class="typing-cursor"></span>
+
+            <div class="prompt-input-action-bar">
+              <div class="spacer"></div>
+              <button 
+                class="action-btn send-btn" 
+                @click="sendMessage" 
+                :disabled="!inputMessage.trim() || loading"
+                title="发送消息"
+              >
+                <el-icon><Top /></el-icon>
+              </button>
             </div>
           </div>
         </div>
-        
-        <!-- 加载中指示器（仅当最后一条助手消息为空时显示） -->
-        <div v-if="loading && messages.length > 0 && messages[messages.length - 1].role === 'assistant' && !messages[messages.length - 1].content" class="message assistant">
-          <div class="message-content">
-            <div class="message-avatar">A</div>
-            <div class="message-text loading-dots">
-              <span></span><span></span><span></span>
-            </div>
-          </div>
-        </div>
-      </div>
 
-      <!-- 底部输入框容器 -->
-      <div class="bottom-input-wrapper">
-        <div class="prompt-input-container">
-          <div class="prompt-input-file-list" v-if="attachedFiles.length > 0">
+        <!-- 有对话时的布局 -->
+        <template v-else>
+          <div class="chat-messages" ref="messagesContainer">
             <div 
-              v-for="(file, index) in attachedFiles" 
+              v-for="(msg, index) in messages" 
               :key="index" 
-              class="file-item"
+              :class="['message', msg.role]"
             >
-              <span class="file-name">{{ file.name }}</span>
-              <button class="file-remove" @click="removeFile(index)">×</button>
+              <div class="message-content">
+                <div class="message-avatar">
+                  {{ msg.role === 'user' ? 'U' : 'A' }}
+                </div>
+                <div class="message-text">
+                  <template v-if="msg.content">{{ msg.content }}</template>
+                  <div v-else-if="loading && msg.role === 'assistant' && index === messages.length - 1" class="loading-dots">
+                    <span></span><span></span><span></span>
+                  </div>
+                  <span v-if="loading && msg.role === 'assistant' && index === messages.length - 1 && msg.content" class="typing-cursor"></span>
+                </div>
+              </div>
             </div>
           </div>
 
-          <div class="prompt-input-input-area">
-            <textarea
-              ref="inputTextareaBottom"
-              v-model="inputMessage"
-              placeholder="有什么我能帮您的吗？"
-              @input="adjustTextareaHeight"
-              @keydown="handleKeydown"
-              rows="1"
-            ></textarea>
-          </div>
+          <div class="bottom-input-wrapper">
+            <div class="bottom-input-container">
+              <div class="prompt-input-input-area">
+                <textarea
+                  ref="bottomInputTextarea"
+                  v-model="inputMessage"
+                  placeholder="输入消息..."
+                  @input="adjustBottomTextareaHeight"
+                  @keydown="handleKeydown"
+                  rows="1"
+                ></textarea>
+              </div>
 
-          <div class="prompt-input-action-bar">
-            <button class="action-btn add-btn" @click="handleAddClick" title="添加附件">
-              <el-icon><Plus /></el-icon>
-            </button>
-            <div class="spacer"></div>
-            <button 
-              class="action-btn send-btn" 
-              @click="sendMessage" 
-              :disabled="!inputMessage.trim() || loading"
-              title="发送消息"
-            >
-              <el-icon><Top /></el-icon>
-            </button>
+              <div class="prompt-input-action-bar">
+                <div class="spacer"></div>
+                <button 
+                  class="action-btn send-btn" 
+                  @click="sendMessage" 
+                  :disabled="!inputMessage.trim() || loading"
+                  title="发送消息"
+                >
+                  <el-icon><Top /></el-icon>
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
+        </template>
       </div>
-    </template>
+    </main>
   </div>
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted, computed, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ref, computed, nextTick, onMounted, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import api from '@/api'
+import { useChatStore } from '@/stores/chat'
 
-// 消息列表
-const messages = ref([])
+const chatStore = useChatStore()
+const { 
+  conversations, 
+  currentConversationId, 
+  messages, 
+  loading 
+} = storeToRefs(chatStore)
+const { loadConversations, startNewChat } = chatStore
 
-// 输入消息
 const inputMessage = ref('')
 
-// 加载状态
-const loading = ref(false)
-
-// 附件文件列表（预留功能）
-const attachedFiles = ref([])
-
-// DOM引用
 const inputTextarea = ref(null)
-const inputTextareaBottom = ref(null)
+const bottomInputTextarea = ref(null)
 const messagesContainer = ref(null)
 
-// 会话ID
-const conversationId = ref(null)
-
-// 是否有消息
 const hasMessages = computed(() => messages.value.length > 0)
 
-// 调整textarea高度
-const adjustTextareaHeight = () => {
-  const textarea = inputTextarea.value || inputTextareaBottom.value
-  if (!textarea) return
-  
-  // 重置高度以获取正确的scrollHeight
-  textarea.style.height = 'auto'
-  
-  // 计算新高度，限制最大高度
-  const minHeight = 24  // 单行最小高度
-  const maxHeight = 160 // 最大高度
-  const newHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight)
-  
-  textarea.style.height = `${newHeight}px`
-}
+// 标志位，防止发送消息时触发的 ID 变化导致重复加载
+const isSending = ref(false)
 
-// 处理键盘事件
-const handleKeydown = (event) => {
-  // Enter发送，Shift+Enter换行
-  if (event.key === 'Enter' && !event.shiftKey) {
-    event.preventDefault()
-    sendMessage()
+// 监听当前对话变化，加载消息
+watch(currentConversationId, async (newId) => {
+  if (isSending.value) return // 如果正在发送中，不触发自动加载，避免覆盖本地正在生成的流
+
+  if (newId) {
+    try {
+      const data = await api.listMessages(newId, { limit: 1000 })
+      messages.value = data.map(msg => ({
+        role: msg.role,
+        content: msg.content
+      }))
+      
+      await nextTick()
+      scrollToBottom()
+    } catch (error) {
+      console.error('加载对话消息失败:', error)
+    }
+  } else {
+    messages.value = []
   }
-}
+}, { immediate: true })
 
-// 发送消息（使用 SSE 流式响应）
+// 发送消息
 const sendMessage = async () => {
-  const message = inputMessage.value.trim()
-  if (!message || loading.value) return
+  if (!inputMessage.value.trim() || loading.value) return
 
-  console.log('[ChatView] 发送消息:', message)
-
-  // 添加用户消息到列表
-  messages.value.push({
-    role: 'user',
-    content: message
-  })
-
-  // 清空输入框
+  isSending.value = true
+  const userMessage = inputMessage.value.trim()
   inputMessage.value = ''
-  nextTick(() => {
-    adjustTextareaHeight()
-    scrollToBottom()
-  })
+  resetTextareaHeight()
 
-  // 添加助手消息占位（用于流式更新）
-  const assistantMessageIndex = messages.value.length
-  messages.value.push({
-    role: 'assistant',
-    content: ''
-  })
-
-  // 发送请求
-  loading.value = true
   try {
+    // 添加用户消息
+    messages.value.push({
+      role: 'user',
+      content: userMessage
+    })
+
+    await nextTick()
+    scrollToBottom()
+
+    loading.value = true
+
+    // 添加空的助手消息占位
+    const assistantMsgIndex = messages.value.length
+    messages.value.push({
+      role: 'assistant',
+      content: ''
+    })
+
+    // 调用聊天接口(SSE流式)
     const response = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('access_token')}`
       },
       body: JSON.stringify({
-        message: message,
-        conversation_id: conversationId.value
+        message: userMessage,
+        conversation_id: currentConversationId.value || undefined
       })
     })
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
+      throw new Error('请求失败')
     }
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
-    let buffer = ''
+    let assistantResponse = ''
 
     while (true) {
       const { done, value } = await reader.read()
-      
-      if (done) {
-        console.log('[ChatView] SSE 流结束')
-        break
-      }
+      if (done) break
 
-      buffer += decoder.decode(value, { stream: true })
-      
-      // 解析 SSE 事件
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || '' // 保留最后一个不完整的行
-      
+      const chunk = decoder.decode(value, { stream: true })
+      const lines = chunk.split('\n')
+
       for (const line of lines) {
         if (line.startsWith('data: ')) {
-          const dataStr = line.slice(6)
+          const data = line.substring(6).trim()
+          
           try {
-            const data = JSON.parse(dataStr)
-            console.log('[ChatView] SSE 事件:', data.type, data)
-            
-            if (data.type === 'start') {
-              // 更新会话ID
-              if (data.conversation_id) {
-                conversationId.value = data.conversation_id
+            const parsed = JSON.parse(data)
+            if (parsed.type === 'start') {
+              // 如果是新对话，更新对话ID并加载列表
+              if (!currentConversationId.value) {
+                currentConversationId.value = parsed.conversation_id
+                await loadConversations()
               }
-            } else if (data.type === 'chunk') {
-              // 追加文本块
-              messages.value[assistantMessageIndex].content += data.content
-              nextTick(scrollToBottom)
-            } else if (data.type === 'done') {
-              // 完成
-              console.log('[ChatView] 流式响应完成')
-            } else if (data.type === 'error') {
-              ElMessage.error(data.message || '生成失败')
+            } else if (parsed.type === 'chunk' && parsed.content) {
+              assistantResponse += parsed.content
+              messages.value[assistantMsgIndex].content = assistantResponse
+              await nextTick()
+              scrollToBottom()
+            } else if (parsed.type === 'error') {
+              throw new Error(parsed.message || '流式输出错误')
             }
           } catch (e) {
-            console.warn('[ChatView] 解析 SSE 数据失败:', dataStr)
+            console.warn('解析消息块失败:', e)
           }
         }
       }
     }
 
-    // 检查是否有内容
-    if (!messages.value[assistantMessageIndex].content) {
-      messages.value[assistantMessageIndex].content = '抱歉，无法生成回复。'
-    }
-
   } catch (error) {
-    console.error('[ChatView] 发送消息失败:', error)
-    ElMessage.error('发送消息失败: ' + (error.message || '网络错误'))
-    // 更新错误消息
-    messages.value[assistantMessageIndex].content = '抱歉，发生错误：' + (error.message || '网络错误')
+    console.error('发送消息失败:', error)
+    if (messages.value.length > 0) {
+      const lastMsg = messages.value[messages.value.length - 1]
+      if (lastMsg.role === 'assistant') {
+        lastMsg.content = `抱歉,发送消息时出现错误: ${error.message}`
+      }
+    }
   } finally {
     loading.value = false
-    nextTick(scrollToBottom)
+    isSending.value = false
+  }
+}
+
+// 文本框高度调整
+const adjustTextareaHeight = () => {
+  const textarea = inputTextarea.value
+  if (!textarea) return
+  textarea.style.height = 'auto'
+  textarea.style.height = textarea.scrollHeight + 'px'
+}
+
+const adjustBottomTextareaHeight = () => {
+  const textarea = bottomInputTextarea.value
+  if (!textarea) return
+  textarea.style.height = 'auto'
+  textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px'
+}
+
+const resetTextareaHeight = () => {
+  if (inputTextarea.value) {
+    inputTextarea.value.style.height = 'auto'
+  }
+  if (bottomInputTextarea.value) {
+    bottomInputTextarea.value.style.height = 'auto'
+  }
+}
+
+// 键盘事件处理
+const handleKeydown = (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    sendMessage()
   }
 }
 
@@ -289,264 +272,103 @@ const scrollToBottom = () => {
   }
 }
 
-// 添加按钮点击（功能置空）
-const handleAddClick = () => {
-  console.log('[ChatView] 添加按钮点击 - 功能待实现')
-  ElMessage.info('附件功能开发中...')
-}
-
-// 移除附件
-const removeFile = (index) => {
-  attachedFiles.value.splice(index, 1)
-}
-
-// 监听消息变化，自动滚动
-watch(messages, () => {
-  nextTick(scrollToBottom)
-}, { deep: true })
-
-// 组件挂载
+// 初始化
 onMounted(() => {
-  // 聚焦输入框
-  if (inputTextarea.value) {
-    inputTextarea.value.focus()
-  }
+  loadConversations()
 })
 </script>
 
 <style scoped>
-.chat-page {
+.chat-container-root {
   width: 100%;
   height: 100%;
-  background: var(--main-bg);
   display: flex;
-  flex-direction: column;
+  background: var(--main-bg);
   overflow: hidden;
-  transition: background-color 0.3s;
 }
 
-/* ==================== 无对话时的居中布局 ==================== */
-.empty-state {
+/* ==================== 右侧聊天区域 ==================== */
+.chat-main {
   flex: 1;
+  height: 100%;
+  overflow: hidden;
+  width: 100%;
+}
+
+.chat-container {
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  background: var(--main-bg);
   overflow: hidden;
 }
 
-.welcome-title {
-  color: var(--text-primary);
-  font-size: 28px;
-  font-weight: 500;
-  margin-bottom: 32px;
-  text-align: center;
-  transition: color 0.3s;
-}
-
-/* ==================== 有对话时的布局 ==================== */
-.chat-page.has-messages {
+.chat-container.has-messages {
   justify-content: flex-start;
 }
 
-/* 消息区域 */
-.chat-messages {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 20px;
+/* 空状态 */
+.empty-state {
+  width: 100%;
+  max-width: 800px;
   display: flex;
   flex-direction: column;
-  gap: 24px;
-  max-width: 800px;
-  width: 100%;
-  margin: 0 auto;
-}
-
-.message {
-  display: flex;
-}
-
-.message-content {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  max-width: 100%;
-}
-
-.message-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 32px;
+  padding: 0 24px;
+}
+
+.welcome-title {
+  font-size: 32px;
   font-weight: 600;
-  font-size: 13px;
-  flex-shrink: 0;
-}
-
-.message.user .message-avatar {
-  background: var(--send-btn);
-  color: white;
-}
-
-.message.assistant .message-avatar {
-  background: var(--input-bg);
-  color: var(--send-btn);
-  transition: background-color 0.3s;
-}
-
-.message-text {
-  flex: 1;
-  padding: 0;
-  line-height: 1.7;
-  word-break: break-word;
-  white-space: pre-wrap;
   color: var(--text-primary);
-  font-size: 15px;
-  transition: color 0.3s;
+  margin: 0;
+  text-align: center;
 }
 
-/* 加载动画 */
-.loading-dots {
-  display: flex;
-  gap: 4px;
-  padding: 4px 0;
-}
-
-.loading-dots span {
-  width: 8px;
-  height: 8px;
-  background: var(--send-btn);
-  border-radius: 50%;
-  animation: bounce 1.4s infinite ease-in-out both;
-}
-
-.loading-dots span:nth-child(1) { animation-delay: -0.32s; }
-.loading-dots span:nth-child(2) { animation-delay: -0.16s; }
-.loading-dots span:nth-child(3) { animation-delay: 0s; }
-
-@keyframes bounce {
-  0%, 80%, 100% { transform: scale(0); }
-  40% { transform: scale(1); }
-}
-
-/* 打字光标 */
-.typing-cursor {
-  display: inline-block;
-  width: 2px;
-  height: 1.2em;
-  background: var(--send-btn);
-  margin-left: 2px;
-  vertical-align: text-bottom;
-  animation: blink 1s step-end infinite;
-}
-
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
-}
-
-/* 底部输入框包装器 */
-.bottom-input-wrapper {
-  padding: 20px;
-  display: flex;
-  justify-content: center;
-  background: var(--main-bg);
-  flex-shrink: 0;
-  transition: background-color 0.3s;
-}
-
-/* ==================== 输入框容器（共用样式） ==================== */
-.prompt-input-container {
+/* 输入框样式 */
+.prompt-input-container,
+.bottom-input-container {
   width: 100%;
-  max-width: 800px;
+  max-width: 760px;
   background: var(--input-bg);
-  border-radius: 24px;
   border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  transition: border-color 0.2s, box-shadow 0.2s, background-color 0.3s;
-}
-
-.prompt-input-container:focus-within {
-  border-color: var(--send-btn);
-  box-shadow: 0 0 0 2px rgba(97, 92, 237, 0.15);
-}
-
-/* 文件列表区域 */
-.prompt-input-file-list {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border-color);
-  display: flex;
-  flex-wrap: wrap;
   gap: 8px;
 }
 
-.file-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: var(--border-color);
-  padding: 4px 12px;
-  border-radius: 16px;
-  font-size: 12px;
-  color: var(--text-primary);
-}
-
-.file-name {
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-remove {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  padding: 0;
-  font-size: 16px;
-  line-height: 1;
-}
-
-.file-remove:hover {
-  color: #ff4d4f;
-}
-
-/* 输入区域 */
 .prompt-input-input-area {
-  padding: 16px 20px 8px;
+  width: 100%;
 }
 
 .prompt-input-input-area textarea {
   width: 100%;
   min-height: 24px;
-  max-height: 160px;
-  background: transparent;
+  max-height: 200px;
+  padding: 8px 12px;
   border: none;
-  outline: none;
+  background: transparent;
   color: var(--text-primary);
-  font-size: 16px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.6;
   resize: none;
+  outline: none;
   font-family: inherit;
-  transition: color 0.3s;
 }
 
 .prompt-input-input-area textarea::placeholder {
   color: var(--text-secondary);
 }
 
-/* 操作栏 */
 .prompt-input-action-bar {
   display: flex;
   align-items: center;
-  padding: 8px 12px 12px;
   gap: 8px;
 }
 
@@ -557,23 +379,19 @@ onMounted(() => {
 .action-btn {
   width: 32px;
   height: 32px;
-  border-radius: 50%;
   border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
+  border-radius: 8px;
   transition: all 0.2s;
 }
 
-.add-btn {
-  background: transparent;
-  color: var(--text-secondary);
-}
-
-.add-btn:hover {
+.action-btn:hover:not(:disabled) {
   background: var(--border-color);
-  color: var(--text-primary);
 }
 
 .send-btn {
@@ -586,26 +404,108 @@ onMounted(() => {
 }
 
 .send-btn:disabled {
-  background: var(--border-color);
-  color: var(--text-secondary);
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
-/* 滚动条样式 */
-.chat-messages::-webkit-scrollbar {
-  width: 6px;
+/* 消息列表 */
+.chat-messages {
+  flex: 1;
+  width: 100%;
+  max-width: 800px;
+  overflow-y: auto;
+  padding: 24px;
+  margin: 0 auto;
 }
 
-.chat-messages::-webkit-scrollbar-track {
-  background: transparent;
+.message {
+  margin-bottom: 24px;
 }
 
-.chat-messages::-webkit-scrollbar-thumb {
+.message-content {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.message-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--send-btn);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.message.user .message-avatar {
   background: var(--border-color);
-  border-radius: 3px;
+  color: var(--text-primary);
 }
 
-.chat-messages::-webkit-scrollbar-thumb:hover {
+.message-text {
+  flex: 1;
+  color: var(--text-primary);
+  font-size: 15px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.typing-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: var(--text-primary);
+  margin-left: 2px;
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+.loading-dots {
+  display: flex;
+  gap: 4px;
+}
+
+.loading-dots span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
   background: var(--text-secondary);
+  animation: bounce 1.4s infinite ease-in-out both;
+}
+
+.loading-dots span:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.loading-dots span:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+@keyframes bounce {
+  0%, 80%, 100% { transform: scale(0); }
+  40% { transform: scale(1); }
+}
+
+/* 底部输入框 */
+.bottom-input-wrapper {
+  width: 100%;
+  padding: 16px 24px;
+  background: var(--main-bg);
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  justify-content: center;
+}
+
+.bottom-input-container {
+  max-width: 800px;
 }
 </style>

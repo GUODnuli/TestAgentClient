@@ -203,6 +203,43 @@ export default {
 
   clearChat(conversationId) {
     return api.post(`/chat/clear/${conversationId}`)
+  },
+
+  // ==================== 对话历史相关 ====================
+  
+  // 创建对话
+  createConversation(data) {
+    return api.post('/conversations', data)
+  },
+  
+  // 获取对话列表
+  listConversations(params) {
+    return api.get('/conversations', { params })
+  },
+  
+  // 获取对话详情
+  getConversation(conversationId) {
+    return api.get(`/conversations/${conversationId}`)
+  },
+  
+  // 更新对话标题
+  updateConversation(conversationId, data) {
+    return api.put(`/conversations/${conversationId}`, data)
+  },
+  
+  // 删除对话
+  deleteConversation(conversationId) {
+    return api.delete(`/conversations/${conversationId}`)
+  },
+  
+  // 创建消息
+  createMessage(conversationId, data) {
+    return api.post(`/conversations/${conversationId}/messages`, data)
+  },
+  
+  // 获取对话消息列表
+  listMessages(conversationId, params) {
+    return api.get(`/conversations/${conversationId}/messages`, { params })
   }
 }
 

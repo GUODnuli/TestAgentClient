@@ -76,6 +76,8 @@ class DifyClient:
         
         self.logger.info("[Dify Streaming] 开始流式调用")
         
+        has_yielded_chunks = False
+        
         try:
             response = requests.post(
                 self.api_endpoint,
@@ -108,24 +110,28 @@ class DifyClient:
                                 # 文本块事件
                                 text = data.get("data", {}).get("text", "")
                                 if text:
+                                    has_yielded_chunks = True
                                     yield text
                             
                             elif event_type == "message":
                                 # 完整消息事件（某些工作流使用）
                                 answer = data.get("answer", "")
                                 if answer:
+                                    has_yielded_chunks = True
                                     yield answer
                             
                             elif event_type == "workflow_finished":
                                 # 工作流完成
-                                outputs = data.get("data", {}).get("outputs", {})
-                                # 尝试提取输出文本
-                                for field in ["text", "output", "result", "reply"]:
-                                    if field in outputs:
-                                        text = outputs[field]
-                                        if text and isinstance(text, str):
-                                            yield text
-                                        break
+                                # 如果之前已经通过 text_chunk 或 message 返回过内容，则不再通过 workflow_finished 返回重复内容
+                                if not has_yielded_chunks:
+                                    outputs = data.get("data", {}).get("outputs", {})
+                                    # 尝试提取输出文本
+                                    for field in ["text", "output", "result", "reply"]:
+                                        if field in outputs:
+                                            text = outputs[field]
+                                            if text and isinstance(text, str):
+                                                yield text
+                                            break
                                 self.logger.info("[Dify Streaming] 工作流完成")
                             
                             elif event_type == "error":
