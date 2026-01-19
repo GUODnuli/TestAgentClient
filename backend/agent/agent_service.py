@@ -78,17 +78,16 @@ class AgentService:
             allow_headers=["*"]
         )
         
-        # 初始化聊天服务
+        # 初始化聊天服务（使用 ReActAgent）
         self.chat_service: Optional[ChatService] = None
-        if dify_config:
-            try:
-                self.chat_service = ChatService(dify_config, self.database)
-                self.logger.info("ChatService 初始化成功", component="AgentService")
-            except Exception as e:
-                self.logger.warning(
-                    f"ChatService 初始化失败，聊天功能不可用: {str(e)}",
-                    component="AgentService"
-                )
+        try:
+            self.chat_service = ChatService(database=self.database)
+            self.logger.info("ChatService 初始化成功（使用 ReActAgent）", component="AgentService")
+        except Exception as e:
+            self.logger.warning(
+                f"ChatService 初始化失败，聊天功能不可用: {str(e)}",
+                component="AgentService"
+            )
         
         # 注册路由
         self._register_routes()
@@ -130,7 +129,7 @@ class AgentService:
                 if not self.chat_service:
                     return ChatResponse(
                         success=False,
-                        message="聊天服务未启用，请检查 Dify 配置"
+                        message="聊天服务未启用，请检查配置"
                     )
                 
                 self.logger.info(
@@ -138,7 +137,7 @@ class AgentService:
                     conversation_id=request.conversation_id
                 )
                 
-                result = self.chat_service.send_message(
+                result = await self.chat_service.send_message(
                     message=request.message,
                     user_id=current_user.user_id,
                     conversation_id=request.conversation_id
@@ -165,7 +164,7 @@ class AgentService:
             if not self.chat_service:
                 return ChatResponse(
                     success=False,
-                    message="聊天服务未启用，请检查 Dify 配置"
+                    message="聊天服务未启用，请检查配置"
                 )
             
             self.logger.info(
@@ -176,7 +175,7 @@ class AgentService:
             async def generate_sse():
                 """生成 SSE 事件流"""
                 try:
-                    for event in self.chat_service.send_message_streaming(
+                    async for event in self.chat_service.send_message_streaming(
                         message=request.message,
                         user_id=current_user.user_id,
                         conversation_id=request.conversation_id

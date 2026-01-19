@@ -170,6 +170,7 @@ watch(isLoggedIn, (loggedIn) => {
   display: flex;
   overflow: hidden;
   transition: background-color 0.3s;
+  color: var(--text-primary);
 }
 
 /* ==================== 侧边栏 ==================== */
@@ -309,6 +310,7 @@ watch(isLoggedIn, (loggedIn) => {
   margin-bottom: 2px;
   position: relative;
   min-height: 36px;
+  color: var(--text-primary);
 }
 
 .history-item:hover {

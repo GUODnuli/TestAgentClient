@@ -46,10 +46,22 @@
                   {{ msg.role === 'user' ? 'U' : 'A' }}
                 </div>
                 <div class="message-text">
-                  <template v-if="msg.content">{{ msg.content }}</template>
-                  <div v-else-if="loading && msg.role === 'assistant' && index === messages.length - 1" class="loading-dots">
-                    <span></span><span></span><span></span>
-                  </div>
+                  <template v-if="msg.role === 'user'">{{ msg.content }}</template>
+                  <template v-else-if="msg.role === 'assistant'">
+                    <!-- 思考过程展示（灰色小号字体） -->
+                    <div v-if="msg.thinking" class="thinking-block">
+                      <div class="thinking-label">思考过程</div>
+                      <div class="thinking-content">{{ msg.thinking }}</div>
+                    </div>
+                    <!-- 正常回复内容 -->
+                    <MarkdownViewer 
+                      v-if="msg.content" 
+                      :content="msg.content" 
+                    />
+                    <div v-else-if="loading && index === messages.length - 1" class="loading-dots">
+                      <span></span><span></span><span></span>
+                    </div>
+                  </template>
                   <span v-if="loading && msg.role === 'assistant' && index === messages.length - 1 && msg.content" class="typing-cursor"></span>
                 </div>
               </div>
@@ -93,6 +105,7 @@ import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import api from '@/api'
 import { useChatStore } from '@/stores/chat'
+import MarkdownViewer from '@/components/MarkdownViewer.vue'
 
 const chatStore = useChatStore()
 const { 
@@ -161,7 +174,8 @@ const sendMessage = async () => {
     const assistantMsgIndex = messages.value.length
     messages.value.push({
       role: 'assistant',
-      content: ''
+      content: '',
+      thinking: ''  // 思考过程
     })
 
     // 调用聊天接口(SSE流式)
@@ -184,6 +198,7 @@ const sendMessage = async () => {
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let assistantResponse = ''
+    let thinkingResponse = ''
 
     while (true) {
       const { done, value } = await reader.read()
@@ -204,6 +219,12 @@ const sendMessage = async () => {
                 currentConversationId.value = parsed.conversation_id
                 await loadConversations()
               }
+            } else if (parsed.type === 'thinking' && parsed.content) {
+              // 处理思考过程
+              thinkingResponse += parsed.content
+              messages.value[assistantMsgIndex].thinking = thinkingResponse
+              await nextTick()
+              scrollToBottom()
             } else if (parsed.type === 'chunk' && parsed.content) {
               assistantResponse += parsed.content
               messages.value[assistantMsgIndex].content = assistantResponse
@@ -452,8 +473,34 @@ onMounted(() => {
   color: var(--text-primary);
   font-size: 15px;
   line-height: 1.6;
-  white-space: pre-wrap;
   word-break: break-word;
+}
+
+.message.user .message-text {
+  white-space: pre-wrap;
+}
+
+/* 思考过程样式 - 灰色小号字体，黑白主题下均为灰色 */
+.thinking-block {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: rgba(128, 128, 128, 0.1);
+  border-radius: 6px;
+  border-left: 3px solid #888;
+}
+
+.thinking-label {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
+.thinking-content {
+  font-size: 13px;
+  color: #888;
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 .typing-cursor {
