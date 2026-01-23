@@ -794,7 +794,7 @@ class StorageManager:
         Args:
             user_id: 用户 ID
             conversation_id: 会话 ID
-            filename: 原始文件名
+            filename: 文件名（前端已重命名，包含时间戳）
             file_content: 文件内容
             
         Returns:
@@ -804,15 +804,8 @@ class StorageManager:
         chat_dir = self.root_path / "chat" / user_id / conversation_id
         chat_dir.mkdir(parents=True, exist_ok=True)
         
-        # 分离文件名和后缀
-        name_part = Path(filename).stem
-        extension = Path(filename).suffix
-        
-        # 加上下划线和时间戳命名
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        new_filename = f"{name_part}_{timestamp}{extension}"
-        
-        file_path = chat_dir / new_filename
+        # 直接使用前端传来的文件名（已包含时间戳）
+        file_path = chat_dir / filename
         
         try:
             # 验证路径安全
@@ -821,7 +814,7 @@ class StorageManager:
             with open(safe_path, 'wb') as f:
                 f.write(file_content)
                 
-            self.logger.info(f"聊天文件保存成功 | user_id: {user_id} | conv_id: {conversation_id} | 文件: {new_filename}")
+            self.logger.info(f"聊天文件保存成功 | user_id: {user_id} | conv_id: {conversation_id} | 文件: {filename}")
             return str(safe_path)
         except Exception as e:
             raise StorageError(f"保存聊天文件失败: {e}")

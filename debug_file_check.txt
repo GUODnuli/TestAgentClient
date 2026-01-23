@@ -1,0 +1,1 @@
+Checking if we can access uploaded files

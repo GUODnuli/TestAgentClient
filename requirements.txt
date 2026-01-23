@@ -39,6 +39,7 @@ anyio>=4.8.0
 
 # Web Related
 websockets>=15.0.1,<15.1.0  # Compatible with google-genai
+python-socketio[asyncio_client]>=5.11.0  # Socket.IO for real-time communication
 
 # Authentication
 PyJWT>=2.10.1

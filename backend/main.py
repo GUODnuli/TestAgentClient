@@ -1,7 +1,7 @@
 """
 MCP 接口测试智能体应用 - 主入口
 
-启动 Agent 服务和所有 MCP Servers。
+启动 Agent 服务（子进程模式）。
 """
 
 import asyncio
@@ -34,7 +34,7 @@ from backend.service import AgentService
 async def initialize_application():
     """初始化应用程序"""
     print("=" * 60)
-    print("MCP 接口测试智能体应用")
+    print("MCP 接口测试智能体应用（子进程模式）")
     print("正在初始化...")
     print("=" * 60)
     
@@ -51,6 +51,7 @@ async def initialize_application():
     web_config = configs["web"]
     model_config = configs["model"]
     
+    print(model_config)
     print("[OK] 配置加载完成")
     
     # 2. 初始化日志系统
@@ -59,7 +60,7 @@ async def initialize_application():
         log_file=default_config.log_file,
         enable_file=True
     )
-    logger.info("应用程序启动", component="main")
+    logger.info("应用程序启动（子进程模式）", component="main")
     print("[OK] 日志系统初始化完成")
     
     # 3. 初始化数据库
@@ -74,18 +75,28 @@ async def initialize_application():
     )
     print("[OK] 文件存储初始化完成")
     
-    # 5. 初始化向量数据库
-    vectordb = VectorDB(
-        config=vectordb_config.dict()
-    )
-    print("[OK] 向量数据库初始化完成")
+    # 5. 初始化向量数据库（可选，失败不阻止启动）
+    vectordb = None
+    try:
+        vectordb = VectorDB(
+            config=vectordb_config.dict()
+        )
+        print("[OK] 向量数据库初始化完成")
+    except Exception as e:
+        print(f"[WARN] 向量数据库初始化失败（可选功能）: {str(e)}")
+        logger.warning(f"向量数据库初始化失败: {str(e)}", component="main")
     
-    # 6. 初始化记忆管理器
-    memory_manager = MemoryManager(
-        working_memory_capacity=100,
-        vectordb_config=vectordb_config.dict()
-    )
-    print("[OK] 记忆管理器初始化完成")
+    # 6. 初始化记忆管理器（可选，失败不阻止启动）
+    memory_manager = None
+    try:
+        memory_manager = MemoryManager(
+            working_memory_capacity=100,
+            vectordb_config=vectordb_config.dict()
+        )
+        print("[OK] 记忆管理器初始化完成")
+    except Exception as e:
+        print(f"[WARN] 记忆管理器初始化失败（可选功能）: {str(e)}")
+        logger.warning(f"记忆管理器初始化失败: {str(e)}", component="main")
     
     # 6.5. 初始化 LLM 客户端（用于 Word 文档转接口）
     from backend.common.llm_client import get_llm_client
@@ -98,58 +109,22 @@ async def initialize_application():
         print(f"[WARN] LLM 客户端初始化失败: {str(e)}")
         logger.warning(f"LLM 客户端初始化失败，Word 文档转接口功能不可用: {str(e)}", component="main")
     
-    # 7. 初始化 AgentScope 有状态 MCP 客户端并连接
-    from agentscope.mcp import StdIOStatefulClient
-    
-    mcp_clients = []
-    mcp_servers_config = agent_config.mcp_servers
-    
-    for s_conf in mcp_servers_config:
-        try:
-            logger.info(f"[MCP] 正在初始化有状态 MCP 客户端: {s_conf.id}")
-            
-            # 如果配置了 args 字段，则将 command 和 args 合并
-            if s_conf.args:
-                # 合并 command 和 args 为完整命令
-                full_command = f"{s_conf.command} {' '.join(s_conf.args)}"
-                logger.info(f"[MCP] 使用合并命令: {full_command}")
-            else:
-                full_command = s_conf.command
-                logger.info(f"[MCP] 使用配置命令: {full_command}")
-            
-            client = StdIOStatefulClient(
-                name=s_conf.id,
-                command=full_command
-            )
-            
-            # 连接到 MCP Server
-            logger.info(f"[MCP] 正在连接 MCP Server: {s_conf.id}")
-            await client.connect()
-            
-            mcp_clients.append(client)
-            print(f"[OK] MCP Server '{s_conf.id}' 连接成功")
-            logger.info(f"[MCP] Server '{s_conf.id}' 连接成功")
-            
-        except Exception as e:
-            print(f"[ERR] MCP Server '{s_conf.id}' 连接异常: {str(e)}")
-            logger.error(f"MCP Server '{s_conf.id}' 连接失败: {str(e)}", exc_info=True)
-
-    # 8. 初始化 Agent HTTP 服务
+    # 7. 初始化 Agent HTTP 服务（子进程模式，不再需要 mcp_clients）
     agent_service = AgentService(
         logger=logger,
         database=database,
-        mcp_clients=mcp_clients,
         storage=storage,
         config=web_config.dict(),
         dify_config=dify_config.dict(),
         model_config=model_config
     )
-    print("[OK] Agent HTTP 服务初始化完成")
+    print("[OK] Agent HTTP 服务初始化完成（子进程模式）")
     
     print("=" * 60)
     print("应用程序初始化完成！")
     print(f"API 服务地址: http://{web_config.host}:{web_config.port}")
     print(f"API 文档地址: http://{web_config.host}:{web_config.port}/docs")
+    print(f"Socket.IO: ws://{web_config.host}:{web_config.port}")
     print("=" * 60)
     
     return agent_service, web_config

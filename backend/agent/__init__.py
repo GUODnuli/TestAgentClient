@@ -1,11 +1,14 @@
 """
 Agent 核心模块
 
-提供任务管理、工作流编排等核心功能。
-注意：MCP 客户端已迁移至 AgentScope 原生实现。
+提供聊天服务、Agent 子进程管理等核心功能。
+采用子进程模式：Agent 作为独立进程运行，通过 HTTP Hook 回传消息。
 """
 
-# MCP 客户端已迁移至使用 AgentScope 的 StdIOStatefulClient
-# 不再需要自定义 mcp_client.py
+from .chat_service import ChatService, ReplyingStateManager, AgentProcessManager
 
-__all__ = []
+__all__ = [
+    "ChatService",
+    "ReplyingStateManager",
+    "AgentProcessManager",
+]

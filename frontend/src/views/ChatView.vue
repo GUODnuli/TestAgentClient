@@ -379,7 +379,15 @@ const triggerFileInput = () => {
 const onFileSelected = (e) => {
   const file = e.target.files[0]
   if (file) {
-    selectedFile.value = file
+    // 在前端对文件重命名，添加时间戳
+    const timestamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0].replace('T', '_')
+    const namePart = file.name.substring(0, file.name.lastIndexOf('.')) || file.name
+    const extension = file.name.includes('.') ? file.name.substring(file.name.lastIndexOf('.')) : ''
+    const newFileName = `${namePart}_${timestamp}${extension}`
+    
+    // 创建新的 File 对象
+    const renamedFile = new File([file], newFileName, { type: file.type })
+    selectedFile.value = renamedFile
   }
   // 清空 input 使得同一个文件可以重复触发 change
   e.target.value = ''
