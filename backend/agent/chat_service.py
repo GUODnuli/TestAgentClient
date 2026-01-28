@@ -510,7 +510,7 @@ uploaded_files: (none)
         
         Args:
             reply_id: 回复 ID
-            msg: 消息数据
+            msg: 消息数据（包含 sequence 序列号）
         """
         reply_data = self._pending_replies.get(reply_id)
         if not reply_data:
@@ -518,6 +518,24 @@ uploaded_files: (none)
             return
         
         conversation_id = reply_data["conversation_id"]
+        
+        # 直接处理消息，不进行复杂的序列号排序
+        # 由于 Hook 是在线程池中并发发送，但 HTTP 请求本身是顺序到达的
+        # 即使有小幅度乱序，也不会影响阅读体验
+        await self._process_message_content(reply_id, msg, conversation_id)
+    
+    async def _process_message_content(self, reply_id: str, msg: Dict[str, Any], conversation_id: str):
+        """
+        处理单个消息的内容（按顺序调用）
+        
+        Args:
+            reply_id: 回复 ID
+            msg: 消息数据
+            conversation_id: 会话 ID
+        """
+        reply_data = self._pending_replies.get(reply_id)
+        if not reply_data:
+            return
         
         # 解析消息内容
         content = msg.get("content", "")
@@ -534,6 +552,9 @@ uploaded_files: (none)
                         thinking_content += block.get("thinking", "")
         elif isinstance(content, str):
             text_content = content
+        
+        # 检测并解析测试用例（从工具返回的 JSON）
+        await self._extract_and_push_testcases(reply_id, text_content, conversation_id)
         
         # 获取或初始化该 message_id 的累积内容
         message_id = msg.get("id", str(uuid.uuid4()))
@@ -627,6 +648,144 @@ uploaded_files: (none)
                 self.replying_state.get_state()
             )
             await self.socket_manager.broadcast_finished(reply_id)
+    
+    async def _extract_and_push_testcases(self, reply_id: str, text_content: str, conversation_id: str):
+        """
+        从文本内容中提取测试用例 JSON 并推送到前端
+        
+        Args:
+            reply_id: 回复 ID
+            text_content: 文本内容（可能包含 JSON）
+            conversation_id: 会话 ID
+        """
+        if not text_content or len(text_content) < 100:
+            return
+        
+        # 检测是否包含测试用例关键字
+        testcase_keywords = [
+            '"testcases"',
+            '"interface_name"',
+            'generate_positive_cases',
+            'generate_negative_cases',
+            'generate_security_cases'
+        ]
+        
+        if not any(keyword in text_content for keyword in testcase_keywords):
+            return
+        
+        try:
+            # 尝试解析 JSON
+            import re
+            # 查找 JSON 对象（以 { 开头，以 } 结尾）
+            json_match = re.search(r'\{.*"testcases".*\}', text_content, re.DOTALL)
+            if not json_match:
+                return
+            
+            json_str = json_match.group(0)
+            data = json.loads(json_str)
+            
+            # 提取测试用例列表
+            testcases = data.get("testcases", [])
+            if not testcases or not isinstance(testcases, list):
+                return
+            
+            # 统计信息
+            count = data.get("count", len(testcases))
+            status = data.get("status", "unknown")
+            
+            # 推送测试用例到前端
+            await self.message_queue.put(reply_id, {
+                "type": "testcases",
+                "data": {
+                    "status": status,
+                    "count": count,
+                    "testcases": testcases
+                }
+            })
+            
+            logger.info(f"[ChatService] 推送测试用例到前端 | reply_id: {reply_id} | count: {count}")
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"[ChatService] 无法解析测试用例 JSON: {e}")
+        except Exception as e:
+            logger.error(f"[ChatService] 提取测试用例失败: {e}")
+    
+    async def stop_agent_by_reply_id(self, reply_id: str) -> bool:
+        """
+        根据 reply_id 终止 Agent 进程
+        
+        Args:
+            reply_id: 回复 ID
+            
+        Returns:
+            bool: 是否成功终止
+        """
+        reply_data = self._pending_replies.get(reply_id)
+        if not reply_data:
+            logger.warning(f"[ChatService] 未找到回复记录: {reply_id}")
+            return False
+        
+        conversation_id = reply_data.get("conversation_id")
+        if not conversation_id:
+            logger.warning(f"[ChatService] 回复记录中没有 conversation_id: {reply_id}")
+            return False
+        
+        # ✅ 在终止前保存已累积的消息内容
+        logger.info(f"[ChatService] 终止前保存消息 | reply_id: {reply_id}")
+        for msg in reply_data.get("messages", []):
+            accumulated_content = msg.get("_accumulated_content", "")
+            if accumulated_content:
+                message_id = msg.get("id", str(uuid.uuid4()))
+                try:
+                    self.database.create_message(
+                        message_id=message_id,
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=accumulated_content
+                    )
+                    logger.info(
+                        f"[ChatService] 终止时保存消息 | message_id: {message_id} | "
+                        f"长度: {len(accumulated_content)}"
+                    )
+                except Exception as e:
+                    # 如果消息已存在，跳过
+                    if "已存在" in str(e) or "exists" in str(e).lower():
+                        logger.warning(f"[ChatService] 消息已存在，跳过: {message_id}")
+                    else:
+                        logger.error(f"[ChatService] 保存消息失败: {e}")
+        
+        # 终止子进程
+        success = self.process_manager.stop_agent(conversation_id)
+        
+        if success:
+            # 标记为已完成（被用户终止）
+            reply_data["finished"] = True
+            reply_data["cancelled"] = True
+            
+            # 发送终止消息到消息队列
+            await self.message_queue.put(reply_id, {
+                "type": "cancelled",
+                "message": "用户终止了请求"
+            })
+            
+            # 结束 SSE 流
+            await self.message_queue.put(reply_id, None)
+            
+            # 重置回复状态
+            self.replying_state.set_replying(False)
+            
+            # 广播状态
+            if self.socket_manager:
+                await self.socket_manager.broadcast_replying_state(
+                    self.replying_state.get_state()
+                )
+                await self.socket_manager.broadcast_cancelled(reply_id)
+            
+            logger.info(f"[ChatService] 成功终止 Agent | reply_id: {reply_id} | conversation_id: {conversation_id}")
+            return True
+        else:
+            logger.warning(f"[ChatService] 终止 Agent 失败 | reply_id: {reply_id}")
+            return False
     
     def cleanup(self):
         """清理资源"""

@@ -24,7 +24,11 @@ class ApiTestPlanToHint:
         "3. **Test Execution**: Run tests against the target service\n"
         "4. **Report Generation**: Produce actionable insights\n\n"
         "If the user provides an API document or asks for test generation, "
-        "create a plan using 'create_plan' with these 4 phases as subtasks."
+        "create a plan using 'create_plan' with these 4 phases as subtasks.\n\n"
+        "# CRITICAL EFFICIENCY RULES\n"
+        "- **BE EXTREMELY CONCISE**: Avoid lengthy explanations between tool calls\n"
+        "- **ACTION FIRST, WORDS LATER**: Directly call tools instead of explaining what you will do\n"
+        "- Use minimal transition text (e.g., 'Applying rules...' instead of full sentences)"
     )
 
     at_the_beginning: str = (
@@ -36,7 +40,10 @@ class ApiTestPlanToHint:
         "- First, activate file tools: call `reset_equipped_tools({{\"api_test_tools\": true}})`\n"
         "- Then call `list_uploaded_files(user_id, conversation_id)` to discover files\n"
         "- Finally, use `safe_view_text_file(file_path)` to read the document\n\n"
-        "If no files are found, ask the user to upload the API document."
+        "If no files are found, ask the user to upload the API document.\n\n"
+        "# CRITICAL EFFICIENCY RULES\n"
+        "- **BE EXTREMELY CONCISE**: Avoid lengthy explanations between tool calls\n"
+        "- **ACTION FIRST**: Directly call tools, minimize transition text"
     )
 
     when_a_subtask_in_progress: str = (
@@ -84,12 +91,16 @@ class ApiTestPlanToHint:
             "1. Ensure `api_test_tools` is activated\n"
             "2. Use `list_uploaded_files` → `safe_view_text_file` to extract content\n"
             "3. Parse the text into structured API spec (endpoint/method/params)\n"
-            "4. Validate spec completeness before proceeding"
+            "4. Validate spec completeness before proceeding\n"
+            "**IMPORTANT**: Minimize text output, focus on actions"
         ),
         "Test Case Generation": (
             "1. Generate positive/negative/security test cases\n"
-            "2. Apply business rules (e.g., rate floor of 2.0%)\n"
-            "3. Store test cases in a structured format for execution"
+            "2. Store test cases in a structured format for execution\n"
+            "**CRITICAL**: After generating test cases, do NOT output full JSON\n"
+            "- Summarize briefly: 'Generated X positive, Y negative, Z security cases'\n"
+            "- Do NOT list parameters you will pass\n"
+            "- DIRECTLY call the tool, then summarize result"
         ),
         "Test Execution": (
             "1. Ensure target service is running (http://127.0.0.1:5000)\n"

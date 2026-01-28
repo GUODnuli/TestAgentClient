@@ -17,6 +17,9 @@ _http_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="hook_http
 # 全局字典，用于存储每个 reply_id 的最后发送内容
 _last_sent_content: Dict[str, str] = {}
 
+# 全局字典，用于存储每个 reply_id 的消息序列号
+_message_sequence: Dict[str, int] = {}
+
 
 class AgentHooks:
     """
@@ -81,6 +84,8 @@ Agent 钩子管理类
                     # 清理该 reply_id 的状态
                     if reply_id in _last_sent_content:
                         del _last_sent_content[reply_id]
+                    if reply_id in _message_sequence:
+                        del _message_sequence[reply_id]
                     break
             except Exception as e:
                 n_retry += 1
@@ -118,6 +123,12 @@ Agent 钩子管理类
         if not reply_id:
             return
         
+        # 获取并递增序列号
+        if reply_id not in _message_sequence:
+            _message_sequence[reply_id] = 0
+        sequence = _message_sequence[reply_id]
+        _message_sequence[reply_id] += 1
+        
         # 计算增量内容
         last_content = _last_sent_content.get(reply_id, "")
         
@@ -137,6 +148,8 @@ Agent 钩子管理类
         # 构建只包含增量内容的新消息
         message_data = msg.to_dict()
         message_data["content"] = [{"type": "text", "text": delta_content}]
+        # 添加序列号保证顺序
+        message_data["sequence"] = sequence
         payload = {
             "replyId": reply_id,
             "msg": message_data

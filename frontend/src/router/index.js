@@ -48,12 +48,6 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
-      path: '/help',
-      name: 'help',
-      component: () => import('../views/HelpView.vue'),
-      meta: { requiresAuth: true }
-    },
-    {
       path: '/settings',
       name: 'settings',
       component: () => import('../views/SettingsView.vue'),

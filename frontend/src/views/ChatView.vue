@@ -76,6 +76,52 @@
                       v-if="msg.content" 
                       :content="msg.content" 
                     />
+                    <!-- 测试用例展示 -->
+                    <div v-if="msg.testcases && msg.testcases.length > 0" class="testcases-block">
+                      <div class="testcases-header">
+                        <el-icon><DocumentChecked /></el-icon>
+                        <span>测试用例（共 {{ msg.testcases.length }} 个）</span>
+                      </div>
+                      <el-collapse class="testcases-list">
+                        <el-collapse-item 
+                          v-for="(testcase, idx) in msg.testcases" 
+                          :key="testcase.id || idx"
+                          :name="idx"
+                        >
+                          <template #title>
+                            <div class="testcase-title">
+                              <el-tag :type="testcase.tags?.includes('security') ? 'danger' : testcase.tags?.includes('negative') ? 'warning' : 'success'" size="small">
+                                {{ testcase.tags?.[0] || 'test' }}
+                              </el-tag>
+                              <span>{{ testcase.interface_name || testcase.description || `测试用例 #${idx + 1}` }}</span>
+                            </div>
+                          </template>
+                          <div class="testcase-details">
+                            <div class="detail-row">
+                              <strong>接口路径:</strong> {{ testcase.interface_path || testcase.request?.url }}
+                            </div>
+                            <div class="detail-row">
+                              <strong>请求方法:</strong> {{ testcase.request?.method || 'POST' }}
+                            </div>
+                            <div v-if="testcase.request?.body" class="detail-row">
+                              <strong>请求参数:</strong>
+                              <pre>{{ JSON.stringify(testcase.request.body, null, 2) }}</pre>
+                            </div>
+                            <div v-if="testcase.assertions?.length" class="detail-row">
+                              <strong>断言:</strong>
+                              <ul>
+                                <li v-for="(assertion, aIdx) in testcase.assertions" :key="aIdx">
+                                  {{ assertion.description || `${assertion.type}: ${assertion.expected}` }}
+                                </li>
+                              </ul>
+                            </div>
+                            <div v-if="testcase.description" class="detail-row">
+                              <strong>说明:</strong> {{ testcase.description }}
+                            </div>
+                          </div>
+                        </el-collapse-item>
+                      </el-collapse>
+                    </div>
                     <div v-else-if="loading && index === messages.length - 1" class="loading-dots">
                       <span></span><span></span><span></span>
                     </div>
@@ -122,13 +168,23 @@
                   <el-icon><Paperclip /></el-icon>
                 </button>
                 <div class="spacer"></div>
+                <!-- 发送/终止按钮 -->
                 <button 
+                  v-if="!loading || !currentReplyId" 
                   class="action-btn send-btn" 
                   @click="sendMessage" 
                   :disabled="(!inputMessage.trim() && !selectedFile) || loading"
                   title="发送消息"
                 >
                   <el-icon><Top /></el-icon>
+                </button>
+                <button 
+                  v-else
+                  class="action-btn stop-btn" 
+                  @click="stopAgent" 
+                  title="终止生成"
+                >
+                  <el-icon><Close /></el-icon>
                 </button>
               </div>
             </div>
@@ -165,6 +221,9 @@ const {
 const { loadConversations, startNewChat } = chatStore
 
 const inputMessage = ref('')
+
+// 当前正在执行的 reply_id，用于终止
+const currentReplyId = ref(null)
 
 const selectedFile = ref(null)
 const fileInput = ref(null)
@@ -307,9 +366,31 @@ const sendMessage = async () => {
                 currentConversationId.value = parsed.conversation_id
                 await loadConversations()
               }
+              // 存储 reply_id 用于终止
+              if (parsed.reply_id) {
+                currentReplyId.value = parsed.reply_id
+              }
             } else if (parsed.type === 'plan_update' && parsed.data) {
               // 处理计划更新
               currentPlanData.value = parsed.data
+            } else if (parsed.type === 'testcases' && parsed.data) {
+              // 处理测试用例推送
+              const testcasesData = parsed.data
+              console.log(`接收到 ${testcasesData.count} 个测试用例`, testcasesData)
+              
+              // 将测试用例添加到助手消息中（以特殊格式存储）
+              if (!messages.value[assistantMsgIndex].testcases) {
+                messages.value[assistantMsgIndex].testcases = []
+              }
+              messages.value[assistantMsgIndex].testcases.push(...testcasesData.testcases)
+              
+              // 添加提示文本
+              const summary = `\n\n📋 已生成 ${testcasesData.count} 个测试用例`
+              assistantResponse += summary
+              messages.value[assistantMsgIndex].content = assistantResponse
+              
+              await nextTick()
+              scrollToBottom()
             } else if (parsed.type === 'thinking' && parsed.content) {
               // 处理思考过程
               thinkingResponse += parsed.content
@@ -342,6 +423,45 @@ const sendMessage = async () => {
   } finally {
     loading.value = false
     isSending.value = false
+    // 清除 reply_id
+    currentReplyId.value = null
+  }
+}
+
+// 终止 Agent
+const stopAgent = async () => {
+  if (!currentReplyId.value) return
+
+  try {
+    const response = await fetch('/api/chat/interrupt', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('access_token')}`
+      },
+      body: JSON.stringify({
+        reply_id: currentReplyId.value
+      })
+    })
+
+    const result = await response.json()
+    if (result.success) {
+      console.log('Agent 已终止')
+      // 添加终止提示
+      if (messages.value.length > 0) {
+        const lastMsg = messages.value[messages.value.length - 1]
+        if (lastMsg.role === 'assistant') {
+          lastMsg.content += '\n\n[用户终止了请求]'
+        }
+      }
+    } else {
+      console.error('终止失败:', result.message)
+    }
+  } catch (error) {
+    console.error('终止 Agent 失败:', error)
+  } finally {
+    loading.value = false
+    currentReplyId.value = null
   }
 }
 
@@ -729,5 +849,91 @@ onMounted(() => {
 .upload-btn:hover:not(:disabled) {
   background: var(--border-color);
   color: var(--send-btn);
+}
+
+/* 测试用例展示样式 */
+.testcases-block {
+  margin-top: 16px;
+  padding: 12px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+}
+
+.testcases-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.testcases-list {
+  border: none;
+}
+
+.testcase-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  flex: 1;
+}
+
+.testcase-details {
+  padding: 12px;
+  background: var(--bg-primary);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.detail-row {
+  margin-bottom: 12px;
+}
+
+.detail-row:last-child {
+  margin-bottom: 0;
+}
+
+.detail-row strong {
+  color: var(--text-primary);
+  margin-right: 8px;
+}
+
+.detail-row pre {
+  margin-top: 4px;
+  padding: 8px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.detail-row ul {
+  margin-top: 4px;
+  padding-left: 20px;
+}
+
+.detail-row li {
+  margin-bottom: 4px;
+  color: var(--text-secondary);
+}
+
+/* 终止按钮样式 */
+.stop-btn {
+  background: #f56c6c !important;
+  color: white !important;
+  transition: all 0.2s;
+}
+
+.stop-btn:hover:not(:disabled) {
+  background: #f78989 !important;
+  transform: scale(1.05);
+}
+
+.stop-btn:active {
+  transform: scale(0.95);
 }
 </style>

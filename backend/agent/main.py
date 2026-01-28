@@ -16,14 +16,12 @@ from agentscope.memory import InMemoryMemory
 from agentscope.message import Msg
 from agentscope.tool import (
     Toolkit,
-    execute_python_code,
-    write_text_file,
-    insert_text_file,
-    view_text_file,
+    execute_python_code
 )
 from tool.utils import (
     list_uploaded_files,
-    safe_view_text_file
+    safe_view_text_file,
+    safe_write_text_file
 )
 from tool.doc_parser import (
     read_document,
@@ -33,8 +31,7 @@ from tool.doc_parser import (
 from tool.case_generator import (
     generate_positive_cases,
     generate_negative_cases,
-    generate_security_cases,
-    apply_business_rules
+    generate_security_cases
 )
 from tool.test_executor import (
     execute_api_test,
@@ -46,6 +43,7 @@ from tool.report_tools import (
     diagnose_failures,
     suggest_improvements
 )
+from tool_registry import setup_toolkit
 
 # 确保项目根目录在 Python 路径中
 project_root = Path(__file__).parent.parent.parent
@@ -144,73 +142,39 @@ async def main():
     
     # 初始化工具集
     toolkit = Toolkit()
-    # TODO: 注册 MCP 工具
-    toolkit.register_tool_function(write_text_file)
-    toolkit.register_tool_function(insert_text_file)
-    # 注意：不再直接注册 view_text_file，改用带安全校验的 safe_view_text_file
-    toolkit.register_tool_function(safe_view_text_file)
-
-    # ===== 注册 API 测试工具 =====
-    # 文档解析工具
-    toolkit.register_tool_function(read_document)
-    toolkit.register_tool_function(extract_api_spec)
-    toolkit.register_tool_function(validate_api_spec)
     
-    # 用例生成工具
-    toolkit.register_tool_function(generate_positive_cases)
-    toolkit.register_tool_function(generate_negative_cases)
-    toolkit.register_tool_function(generate_security_cases)
-    toolkit.register_tool_function(apply_business_rules)
+    # 准备基础工具
+    basic_tools = {
+        'safe_write_text_file': safe_write_text_file,  # 安全的文件写入（限制到 storage/cache）
+        'safe_view_text_file': safe_view_text_file
+    }
     
-    # 测试执行工具
-    toolkit.register_tool_function(execute_api_test)
-    toolkit.register_tool_function(validate_response)
-    toolkit.register_tool_function(capture_metrics)
+    # 准备 API 测试工具模块
+    tool_modules = {
+        'doc_parser': {
+            'read_document': read_document,
+            'extract_api_spec': extract_api_spec,
+            'validate_api_spec': validate_api_spec
+        },
+        'case_generator': {
+            'generate_positive_cases': generate_positive_cases,
+            'generate_negative_cases': generate_negative_cases,
+            'generate_security_cases': generate_security_cases
+        },
+        'test_executor': {
+            'execute_api_test': execute_api_test,
+            'validate_response': validate_response,
+            'capture_metrics': capture_metrics
+        },
+        'report_tools': {
+            'generate_test_report': generate_test_report,
+            'diagnose_failures': diagnose_failures,
+            'suggest_improvements': suggest_improvements
+        }
+    }
     
-    # 报告生成工具
-    toolkit.register_tool_function(generate_test_report)
-    toolkit.register_tool_function(diagnose_failures)
-    toolkit.register_tool_function(suggest_improvements)
-
-    # 接口测试工具组
-    toolkit.create_tool_group(
-        group_name="api_test_tools",
-        description="用于 API 测试的文件操作工具集。当用户提及上传的文档时，首先使用工具发现可用文件，然后访问文件内容。",
-        notes="""# File Operation Guidelines
-When users mention uploaded documents:
-1. **ALWAYS FIRST** call `list_uploaded_files(user_id, conversation_id)` to discover available files
-   - Extract user_id and conversation_id from [SYSTEM CONTEXT]
-2. Then use the returned file paths with `safe_view_text_file(file_path)`
-3. Never assume file paths - always use the paths returned by list_uploaded_files
-
-# Workflow
-- Use list_uploaded_files(user_id, conversation_id) to discover uploaded documents
-- Use safe_view_text_file(file_path) to read file contents with discovered paths
-- Process and analyze file contents to answer user queries
-
-# Error Handling
-- If you encounter FunctionInactiveError when calling a tool, it means the tool group is not activated
-- Use `equip_tool_group(tool_group_name)` to activate the corresponding tool group
-- Example: If list_uploaded_files raises FunctionInactiveError, call `equip_tool_group("api_test_tools")` 
-
-# Workflow Example
-User: "分析我上传的接口文档"
-Agent should:
-1. Call list_uploaded_files(user_id="...", conversation_id="...")
-2. Get response: "- api_spec.docx (path: user_id/conv_id/api_spec.docx)"
-3. Call safe_view_text_file("user_id/conv_id/api_spec.docx")
-
-# Context Information
-- user_id and conversation_id are provided in [SYSTEM CONTEXT] block
-- Extract these values from the context to call list_uploaded_files
-
-# Security
-- All file paths are validated to prevent directory traversal attacks
-- Only files within storage/chat directory can be accessed"""
-    )
-    toolkit.register_tool_function(
-        list_uploaded_files, group_name="api_test_tools"
-    )
+    # 一键配置所有工具和工具组
+    toolkit = setup_toolkit(toolkit, tool_modules, basic_tools)
     
     # 获取模型
     model = get_model(

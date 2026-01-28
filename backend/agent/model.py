@@ -93,10 +93,21 @@ def get_model(
     provider = llm_provider.lower()
     
     if provider == "dashscope":
+        # 添加超时配置，防止API响应慢或挂起时长时间阻塞
+        if 'timeout' not in client_kwargs:
+            # 连接超时10秒，读取超时60秒，写入超时10秒
+            client_kwargs['timeout'] = {"connect": 10, "read": 60, "write": 10}
+        
+        # IMPORTANT: 为流式响应添加总超时限制（AgentScope 1.0.12）
+        # 如果流式读取卡住，这个超时会终止整个请求
+        if 'max_retries' not in client_kwargs:
+            client_kwargs['max_retries'] = 0  # 禁用重试，快速失败
+        
         return DashScopeChatModel(
             model_name=model_name,
             api_key=api_key,
             stream=True,
+            client_kwargs=client_kwargs,
             generate_kwargs=generate_kwargs,
         )
     elif provider == "openai":

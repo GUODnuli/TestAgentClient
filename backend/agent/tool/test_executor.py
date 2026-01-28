@@ -95,11 +95,18 @@ def execute_api_test(testcase_json: str, base_url: str = "") -> ToolResponse:
         request_data = testcase_dict.get("request", {})
         endpoint = request_data.get("url") or testcase_dict.get("interface_path", "")
         
-        # 确保 endpoint 以 / 开头
-        if endpoint and not endpoint.startswith("/"):
-            endpoint = "/" + endpoint
+        # 检查 endpoint 是否已经是完整 URL（包含 http:// 或 https://）
+        if endpoint.startswith(("http://", "https://")):
+            # 已经是完整 URL，直接使用
+            full_url = endpoint
+        else:
+            # 相对路径，需要拼接 base_url
+            # 确保 endpoint 以 / 开头
+            if endpoint and not endpoint.startswith("/"):
+                endpoint = "/" + endpoint
+            
+            full_url = f"{base_url}{endpoint}"
         
-        full_url = f"{base_url}{endpoint}"
         request_data["url"] = full_url
         
         # 构建 TestCase 对象

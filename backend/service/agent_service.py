@@ -50,6 +50,11 @@ class AgentFinishedRequest(BaseModel):
     replyId: str
 
 
+class StopAgentRequest(BaseModel):
+    """终止 Agent 请求"""
+    reply_id: str
+
+
 class SocketManager:
     """Socket.IO 管理器"""
     
@@ -113,6 +118,14 @@ class SocketManager:
         """广播完成信号"""
         await self.sio.emit(
             "pushFinished",
+            {"replyId": reply_id},
+            namespace="/client"
+        )
+    
+    async def broadcast_cancelled(self, reply_id: str):
+        """广播终止信号"""
+        await self.sio.emit(
+            "pushCancelled",
             {"replyId": reply_id},
             namespace="/client"
         )
@@ -407,14 +420,23 @@ class AgentService:
         
         @self.app.post("/api/chat/interrupt")
         async def interrupt_agent(
+            request: StopAgentRequest,
             current_user: UserResponse = Depends(get_current_user)
         ):
-            """中断 Agent 执行"""
+            """终止 Agent 执行"""
             try:
-                await self.socket_manager.send_interrupt()
-                return {"success": True, "message": "中断信号已发送"}
+                if not self.chat_service:
+                    return {"success": False, "message": "ChatService 不可用"}
+                
+                # 根据 reply_id 终止 Agent
+                success = await self.chat_service.stop_agent_by_reply_id(request.reply_id)
+                
+                if success:
+                    return {"success": True, "message": "Agent 已终止"}
+                else:
+                    return {"success": False, "message": "未找到对应的 Agent 或终止失败"}
             except Exception as e:
-                self.logger.error(f"[中断] 发送中断信号失败: {str(e)}", exc_info=True)
+                self.logger.error(f"[终止] 终止 Agent 失败: {str(e)}", exc_info=True)
                 return {"success": False, "message": str(e)}
     
     def get_uploaded_files(self, conversation_id: str) -> List[str]:

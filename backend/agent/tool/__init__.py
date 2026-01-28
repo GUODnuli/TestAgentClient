@@ -7,7 +7,7 @@ Agent 工具集
 工具分类：
 - utils: 基础文件操作工具（list_uploaded_files, safe_view_text_file）
 - doc_parser: 文档解析工具（read_document, extract_api_spec, validate_api_spec）
-- case_generator: 用例生成工具（generate_positive_cases, generate_negative_cases, generate_security_cases, apply_business_rules）
+- case_generator: 用例生成工具（generate_positive_cases, generate_negative_cases, generate_security_cases）
 - test_executor: 测试执行工具（execute_api_test, validate_response, capture_metrics）
 - report_tools: 报告生成工具（generate_test_report, diagnose_failures, suggest_improvements）
 """
@@ -15,7 +15,8 @@ Agent 工具集
 # ===== 基础工具 =====
 from .utils import (
     list_uploaded_files,
-    safe_view_text_file
+    safe_view_text_file,
+    safe_write_text_file
 )
 
 # ===== 文档解析工具 =====
@@ -29,8 +30,7 @@ from .doc_parser import (
 from .case_generator import (
     generate_positive_cases,
     generate_negative_cases,
-    generate_security_cases,
-    apply_business_rules
+    generate_security_cases
 )
 
 # ===== 测试执行工具 =====
@@ -52,6 +52,7 @@ __all__ = [
     # 基础工具
     "list_uploaded_files",
     "safe_view_text_file",
+    "safe_write_text_file",
     # 文档解析
     "read_document",
     "extract_api_spec",
@@ -60,7 +61,6 @@ __all__ = [
     "generate_positive_cases",
     "generate_negative_cases",
     "generate_security_cases",
-    "apply_business_rules",
     # 测试执行
     "execute_api_test",
     "validate_response",
@@ -80,7 +80,7 @@ TOOL_GROUPS = {
     },
     "case_generation": {
         "description": "用例生成工具组：基于 API 规范自动生成各类测试用例",
-        "tools": ["generate_positive_cases", "generate_negative_cases", "generate_security_cases", "apply_business_rules"]
+        "tools": ["generate_positive_cases", "generate_negative_cases", "generate_security_cases"]
     },
     "test_execution": {
         "description": "测试执行工具组：执行 API 测试并验证响应",

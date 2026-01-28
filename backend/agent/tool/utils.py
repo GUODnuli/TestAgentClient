@@ -1,10 +1,12 @@
 from pathlib import Path
+import json
 from agentscope.tool import ToolResponse
 from agentscope.message import TextBlock
 
 # 获取项目根目录的绝对路径（避免工作目录不一致问题）
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 STORAGE_CHAT_DIR = (PROJECT_ROOT / "storage" / "chat").resolve()
+STORAGE_CACHE_DIR = (PROJECT_ROOT / "storage" / "cache").resolve()
 
 
 def list_uploaded_files(user_id: str, conversation_id: str) -> ToolResponse:
@@ -108,4 +110,72 @@ def safe_view_text_file(file_path: str) -> ToolResponse:
         # ✅ 错误也必须返回 ToolResponse
         return ToolResponse(
             content=[TextBlock(type="text", text=f"Error: {str(e)}")]
+        )
+
+
+def safe_write_text_file(file_path: str, content: str) -> ToolResponse:
+    """
+    Write text content to a file safely (restricted to storage/cache directory).
+    
+    All files will be saved to storage/cache directory to prevent polluting
+    the project root. The file_path parameter will be treated as filename only.
+    
+    Args:
+        file_path: Filename (or path, but only filename will be used)
+        content: Text content to write
+        
+    Returns:
+        ToolResponse with success message and actual file path
+        
+    Example:
+        safe_write_text_file("test_results.json", json.dumps(data))
+        # File will be saved to: storage/cache/test_results.json
+    """
+    try:
+        # 确保 cache 目录存在
+        STORAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # 只取文件名，防止路径遍历攻击
+        filename = Path(file_path).name
+        
+        # 限制文件名长度
+        if len(filename) > 255:
+            return ToolResponse(
+                content=[TextBlock(
+                    type="text",
+                    text="Error: Filename too long (max 255 characters)"
+                )]
+            )
+        
+        # 构造安全的目标路径
+        target_path = (STORAGE_CACHE_DIR / filename).resolve()
+        
+        # 验证路径在允许的范围内
+        try:
+            target_path.relative_to(STORAGE_CACHE_DIR)
+        except ValueError:
+            return ToolResponse(
+                content=[TextBlock(
+                    type="text",
+                    text="Error: Access denied (path traversal detected)"
+                )]
+            )
+        
+        # 写入文件
+        target_path.write_text(content, encoding='utf-8')
+        
+        # 返回成功消息
+        return ToolResponse(
+            content=[TextBlock(
+                type="text",
+                text=f"File saved successfully to: {target_path}\nFile size: {len(content)} bytes"
+            )]
+        )
+        
+    except Exception as e:
+        return ToolResponse(
+            content=[TextBlock(
+                type="text",
+                text=f"Error writing file: {str(e)}"
+            )]
         )
