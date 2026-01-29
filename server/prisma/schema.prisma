@@ -1,0 +1,138 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  BANNED
+}
+
+enum TaskStatus {
+  PENDING
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum AgentType {
+  CHAT
+  PLAN
+  EXECUTOR
+  REVIEW
+}
+
+enum AgentSessionStatus {
+  STARTING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model User {
+  id            String    @id @default(uuid())
+  username      String    @unique
+  email         String?   @unique
+  passwordHash  String    @map("password_hash")
+  displayName   String?   @map("display_name")
+  role          UserRole  @default(USER)
+  status        UserStatus @default(ACTIVE)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  lastLoginAt   DateTime? @map("last_login_at")
+
+  conversations Conversation[]
+  tasks         Task[]
+  agentSessions AgentSession[]
+
+  @@map("users")
+}
+
+model Conversation {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  title     String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id])
+  messages Message[]
+  agentSessions AgentSession[]
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("conversations")
+}
+
+model Message {
+  id             String   @id @default(uuid())
+  conversationId String   @map("conversation_id")
+  role           String
+  content        String   @db.Text
+  metadata       Json?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([createdAt])
+  @@map("messages")
+}
+
+model Task {
+  id           String     @id @default(uuid())
+  userId       String?    @map("user_id")
+  taskType     String     @map("task_type")
+  status       TaskStatus @default(PENDING)
+  parameters   Json?
+  result       Json?
+  checkpoint   Json?
+  errorMessage String?    @map("error_message") @db.Text
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  startedAt    DateTime?  @map("started_at")
+  completedAt  DateTime?  @map("completed_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([taskType])
+  @@index([status])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("tasks")
+}
+
+model AgentSession {
+  id             String             @id @default(uuid())
+  conversationId String             @map("conversation_id")
+  userId         String             @map("user_id")
+  replyId        String             @unique @map("reply_id")
+  agentType      AgentType          @default(CHAT) @map("agent_type")
+  status         AgentSessionStatus @default(STARTING)
+  pid            Int?
+  metadata       Json?
+  startedAt      DateTime           @default(now()) @map("started_at")
+  finishedAt     DateTime?          @map("finished_at")
+  errorMessage   String?            @map("error_message") @db.Text
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@index([conversationId])
+  @@index([replyId])
+  @@index([status])
+  @@map("agent_sessions")
+}

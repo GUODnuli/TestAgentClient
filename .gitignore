@@ -36,6 +36,7 @@ env/
 *~
 .DS_Store
 .qoder
+.claude
 
 # Logs
 *.log
@@ -68,6 +69,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+
+# Server (Node.js backend)
+server/node_modules/
+server/dist/
+server/.env
+server/prisma/migrations/
 
 # Frontend Build
 frontend/dist/

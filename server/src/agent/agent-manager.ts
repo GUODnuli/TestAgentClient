@@ -1,0 +1,456 @@
+import type { ChildProcess } from 'child_process';
+import { getRedis } from '../config/redis.js';
+import { getPrisma } from '../config/database.js';
+import { getLogger } from '../config/logger.js';
+import { spawnAgentProcess } from './process-spawner.js';
+import type { SpawnAgentParams, PendingReply, AgentMessageData } from './types.js';
+
+const AGENT_REPLY_TTL = 3600; // 1 hour
+
+export class AgentManager {
+  /** Active child processes by replyId */
+  private processes = new Map<string, ChildProcess>();
+  /** Conversation → set of active replyIds */
+  private conversationAgents = new Map<string, Set<string>>();
+  /** Pending reply data by replyId */
+  private pendingReplies = new Map<string, PendingReply>();
+  /** SSE message queues by replyId (callbacks waiting for messages) */
+  private messageCallbacks = new Map<string, Array<(msg: AgentMessageData | null) => void>>();
+
+  private get logger() {
+    return getLogger();
+  }
+
+  /**
+   * Spawn a new agent subprocess
+   */
+  async spawnAgent(params: SpawnAgentParams): Promise<string> {
+    const { replyId, conversationId, userId } = params;
+
+    // Initialize pending reply
+    this.pendingReplies.set(replyId, {
+      conversationId,
+      replyId,
+      userId,
+      messages: [],
+      finished: false,
+    });
+
+    // Track conversation → agent mapping
+    if (!this.conversationAgents.has(conversationId)) {
+      this.conversationAgents.set(conversationId, new Set());
+    }
+    this.conversationAgents.get(conversationId)!.add(replyId);
+
+    // Store agent state in Redis
+    const redis = getRedis();
+    try {
+      await redis.setex(
+        `agent:reply:${replyId}`,
+        AGENT_REPLY_TTL,
+        JSON.stringify({
+          conversationId,
+          replyId,
+          userId,
+          status: 'starting',
+          startedAt: new Date().toISOString(),
+        })
+      );
+    } catch (err) {
+      this.logger.error({ err, replyId }, 'Failed to store agent state in Redis');
+    }
+
+    // Create AgentSession record in DB
+    const prisma = getPrisma();
+    try {
+      await prisma.agentSession.create({
+        data: {
+          conversationId,
+          userId,
+          replyId,
+          agentType: 'CHAT',
+          status: 'STARTING',
+        },
+      });
+    } catch (err) {
+      this.logger.error({ err, replyId }, 'Failed to create AgentSession record');
+    }
+
+    // Spawn the process
+    const child = spawnAgentProcess(params);
+    this.processes.set(replyId, child);
+
+    // Update status to RUNNING
+    try {
+      await prisma.agentSession.update({
+        where: { replyId },
+        data: { status: 'RUNNING', pid: child.pid ?? null },
+      });
+      await redis.setex(
+        `agent:reply:${replyId}`,
+        AGENT_REPLY_TTL,
+        JSON.stringify({
+          conversationId,
+          replyId,
+          userId,
+          status: 'running',
+          startedAt: new Date().toISOString(),
+        })
+      );
+    } catch (err) {
+      this.logger.error({ err, replyId }, 'Failed to update agent status');
+    }
+
+    // Handle process exit
+    child.on('exit', async () => {
+      this.processes.delete(replyId);
+      const convAgents = this.conversationAgents.get(conversationId);
+      if (convAgents) {
+        convAgents.delete(replyId);
+        if (convAgents.size === 0) {
+          this.conversationAgents.delete(conversationId);
+        }
+      }
+    });
+
+    this.logger.info(
+      { replyId, conversationId, pid: child.pid },
+      'Agent process spawned'
+    );
+
+    return replyId;
+  }
+
+  /**
+   * Handle incoming message from agent hook
+   */
+  async handleAgentMessage(replyId: string, msg: AgentMessageData): Promise<void> {
+    const reply = this.pendingReplies.get(replyId);
+    if (!reply) {
+      this.logger.warn({ replyId }, 'No pending reply found for agent message');
+      return;
+    }
+
+    // Parse content
+    let textContent = '';
+    let thinkingContent = '';
+    const content = msg.content;
+
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (typeof block === 'object' && block !== null) {
+          if (block.type === 'text') {
+            textContent += block.text ?? '';
+          } else if (block.type === 'thinking') {
+            thinkingContent += block.thinking ?? '';
+          }
+        }
+      }
+    } else if (typeof content === 'string') {
+      textContent = content;
+    }
+
+    // Accumulate content per message id
+    const messageId = msg.id ?? '';
+    const existingIdx = reply.messages.findIndex((m) => m.id === messageId && messageId !== '');
+
+    if (existingIdx >= 0) {
+      const existing = reply.messages[existingIdx];
+      const accumulated = (existing._accumulated_content ?? '') + textContent;
+      reply.messages[existingIdx] = {
+        ...existing,
+        _accumulated_content: accumulated,
+        content: [{ type: 'text', text: accumulated }],
+      };
+    } else {
+      reply.messages.push({
+        ...msg,
+        _accumulated_content: textContent,
+      });
+    }
+
+    // Push to SSE queue
+    if (thinkingContent) {
+      this.pushToSSEQueue(replyId, { type: 'thinking', content: thinkingContent } as unknown as AgentMessageData);
+    }
+    if (textContent) {
+      this.pushToSSEQueue(replyId, { type: 'chunk', content: textContent } as unknown as AgentMessageData);
+    }
+
+    // Also push raw msg for testcase extraction
+    await this.extractAndPushTestcases(replyId, textContent);
+  }
+
+  /**
+   * Handle agent finished signal
+   */
+  async handleAgentFinished(replyId: string): Promise<void> {
+    const reply = this.pendingReplies.get(replyId);
+    const prisma = getPrisma();
+    const redis = getRedis();
+
+    if (reply) {
+      reply.finished = true;
+
+      // Save accumulated messages to database
+      for (const msg of reply.messages) {
+        const accumulated = msg._accumulated_content ?? '';
+        if (accumulated) {
+          const msgId = msg.id ?? undefined;
+          try {
+            await prisma.message.create({
+              data: {
+                ...(msgId ? { id: msgId } : {}),
+                conversationId: reply.conversationId,
+                role: 'assistant',
+                content: accumulated,
+              },
+            });
+          } catch (err) {
+            // Message might already exist
+            this.logger.warn({ err, replyId }, 'Failed to save agent message');
+          }
+        }
+      }
+    }
+
+    // Send end signal to SSE queue
+    this.pushToSSEQueue(replyId, null);
+
+    // Update AgentSession
+    try {
+      await prisma.agentSession.update({
+        where: { replyId },
+        data: { status: 'COMPLETED', finishedAt: new Date() },
+      });
+    } catch (err) {
+      this.logger.error({ err, replyId }, 'Failed to update AgentSession');
+    }
+
+    // Clean up Redis
+    try {
+      await redis.del(`agent:reply:${replyId}`);
+    } catch {
+      // Non-critical
+    }
+
+    // Clean up process reference
+    const child = this.processes.get(replyId);
+    if (child) {
+      try {
+        child.kill();
+      } catch {
+        // Already dead
+      }
+      this.processes.delete(replyId);
+    }
+
+    this.logger.info({ replyId }, 'Agent finished');
+  }
+
+  /**
+   * Terminate agent by replyId
+   */
+  async terminateAgent(replyId: string): Promise<boolean> {
+    const reply = this.pendingReplies.get(replyId);
+    const child = this.processes.get(replyId);
+    const prisma = getPrisma();
+
+    if (!reply) {
+      this.logger.warn({ replyId }, 'No pending reply to terminate');
+      return false;
+    }
+
+    // Save accumulated messages before termination
+    for (const msg of reply.messages) {
+      const accumulated = msg._accumulated_content ?? '';
+      if (accumulated) {
+        const msgId = msg.id ?? undefined;
+        try {
+          await prisma.message.create({
+            data: {
+              ...(msgId ? { id: msgId } : {}),
+              conversationId: reply.conversationId,
+              role: 'assistant',
+              content: accumulated,
+            },
+          });
+        } catch {
+          // Might already exist
+        }
+      }
+    }
+
+    // Kill process
+    if (child) {
+      try {
+        child.kill('SIGTERM');
+        // Force kill after 5 seconds
+        setTimeout(() => {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // Already dead
+          }
+        }, 5000);
+      } catch {
+        // Already dead
+      }
+      this.processes.delete(replyId);
+    }
+
+    reply.finished = true;
+    reply.cancelled = true;
+
+    // Push cancel event to SSE
+    this.pushToSSEQueue(replyId, { type: 'cancelled', message: '用户终止了请求' } as unknown as AgentMessageData);
+    this.pushToSSEQueue(replyId, null);
+
+    // Update DB
+    try {
+      await prisma.agentSession.update({
+        where: { replyId },
+        data: { status: 'CANCELLED', finishedAt: new Date() },
+      });
+    } catch (err) {
+      this.logger.error({ err, replyId }, 'Failed to update AgentSession on cancel');
+    }
+
+    this.logger.info({ replyId }, 'Agent terminated');
+    return true;
+  }
+
+  /**
+   * Terminate all agents for a conversation
+   */
+  async terminateConversation(conversationId: string): Promise<void> {
+    const replyIds = this.conversationAgents.get(conversationId);
+    if (!replyIds) return;
+
+    for (const replyId of replyIds) {
+      await this.terminateAgent(replyId);
+    }
+  }
+
+  /**
+   * Get active agent replyIds for a conversation
+   */
+  getConversationAgents(conversationId: string): string[] {
+    const agents = this.conversationAgents.get(conversationId);
+    return agents ? [...agents] : [];
+  }
+
+  /**
+   * Check if a replyId is still running
+   */
+  isRunning(replyId: string): boolean {
+    const child = this.processes.get(replyId);
+    if (!child) return false;
+    return child.exitCode === null && !child.killed;
+  }
+
+  /**
+   * Get pending reply data
+   */
+  getPendingReply(replyId: string): PendingReply | undefined {
+    return this.pendingReplies.get(replyId);
+  }
+
+  /**
+   * Register an SSE message callback for a replyId
+   */
+  registerSSECallback(replyId: string, callback: (msg: AgentMessageData | null) => void): void {
+    if (!this.messageCallbacks.has(replyId)) {
+      this.messageCallbacks.set(replyId, []);
+    }
+    this.messageCallbacks.get(replyId)!.push(callback);
+  }
+
+  /**
+   * Remove SSE callbacks for a replyId
+   */
+  removeSSECallbacks(replyId: string): void {
+    this.messageCallbacks.delete(replyId);
+  }
+
+  /**
+   * Push message to SSE queue callbacks
+   */
+  private pushToSSEQueue(replyId: string, msg: AgentMessageData | null): void {
+    const callbacks = this.messageCallbacks.get(replyId);
+    if (callbacks) {
+      for (const cb of callbacks) {
+        cb(msg);
+      }
+    }
+  }
+
+  /**
+   * Extract testcases from text and push as SSE event
+   */
+  private async extractAndPushTestcases(replyId: string, textContent: string): Promise<void> {
+    if (!textContent || textContent.length < 100) return;
+
+    const keywords = ['"testcases"', '"interface_name"', 'generate_positive_cases', 'generate_negative_cases'];
+    if (!keywords.some((kw) => textContent.includes(kw))) return;
+
+    try {
+      const match = textContent.match(/\{.*"testcases".*\}/s);
+      if (!match) return;
+
+      const data = JSON.parse(match[0]);
+      const testcases = data.testcases;
+      if (!Array.isArray(testcases) || testcases.length === 0) return;
+
+      this.pushToSSEQueue(replyId, {
+        type: 'testcases',
+        data: {
+          status: data.status ?? 'unknown',
+          count: data.count ?? testcases.length,
+          testcases,
+        },
+      } as unknown as AgentMessageData);
+
+      this.logger.info({ replyId, count: testcases.length }, 'Testcases extracted and pushed');
+    } catch {
+      // JSON parse failure, non-critical
+    }
+  }
+
+  /**
+   * Clean up all processes (called on shutdown)
+   */
+  cleanup(): void {
+    this.logger.info({ count: this.processes.size }, 'Cleaning up all agent processes');
+
+    for (const [replyId, child] of this.processes) {
+      try {
+        child.kill('SIGTERM');
+        setTimeout(() => {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // Already dead
+          }
+        }, 3000);
+      } catch {
+        // Already dead
+      }
+      this.logger.info({ replyId }, 'Agent process killed');
+    }
+
+    this.processes.clear();
+    this.conversationAgents.clear();
+    this.pendingReplies.clear();
+    this.messageCallbacks.clear();
+  }
+}
+
+let _agentManager: AgentManager | null = null;
+
+export function getAgentManager(): AgentManager {
+  if (!_agentManager) {
+    _agentManager = new AgentManager();
+  }
+  return _agentManager;
+}
