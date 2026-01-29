@@ -1,24 +1,22 @@
 # MCP Interface Test Agent - Python Dependencies
+# (Python Agent only — backend server is now Node.js)
 
-# Core Framework
-fastapi>=0.128.0
-uvicorn[standard]>=0.35.0
-pydantic>=2.11.0
-python-multipart>=0.0.9
-starlette>=0.40.0
+# Agent Framework
+agentscope>=0.1.0
+json5>=0.9.0
 
 # Test Engine
 requests==2.31.0
-# httprunner==4.3.5  # Disabled to avoid dependency conflicts
 
-# Database and Storage
-chromadb==0.4.15  # Compatible with Python 3.12, avoid onnxruntime issues
+# Vector DB and Embeddings
+chromadb==0.4.15
 faiss-cpu==1.13.2
 sentence-transformers==2.2.2
 
 # Configuration and Logging
 toml==0.10.2
 loguru==0.7.2
+pydantic>=2.11.0
 
 # HTTP Client and Tools
 httpx>=0.28.1
@@ -27,7 +25,7 @@ jsonpath-ng==1.6.0
 # Document Parsing
 pyyaml==6.0.1
 jsonschema>=4.23.0
-python-docx==1.1.0  # Word document processing
+python-docx==1.1.0
 
 # Template Engine
 jinja2==3.1.2
@@ -37,12 +35,5 @@ python-dotenv>=1.1.0
 rich>=13.9.4
 anyio>=4.8.0
 
-# Web Related
-websockets>=15.0.1,<15.1.0  # Compatible with google-genai
-python-socketio[asyncio_client]>=5.11.0  # Socket.IO for real-time communication
-
-# Authentication
-PyJWT>=2.10.1
-passlib[bcrypt]==1.7.4
-bcrypt==4.2.1  # Compatible with passlib 1.7.4
-redis==5.0.1
+# Web Related (for Agent Socket.IO connectivity)
+python-socketio[asyncio_client]>=5.11.0

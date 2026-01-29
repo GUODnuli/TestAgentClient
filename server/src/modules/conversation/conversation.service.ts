@@ -3,16 +3,17 @@ import { getRedis } from '../../config/redis.js';
 import { getLogger } from '../../config/logger.js';
 import { NotFoundError, ForbiddenError } from '../../common/errors.js';
 import { formatConversation, formatMessage } from '../../common/utils.js';
+import { CacheKeys, CacheTTL } from '../../cache/cache-keys.js';
 
-const CACHE_CONVERSATIONS_TTL = 300; // 5 minutes
-const CACHE_MESSAGES_TTL = 60; // 1 minute
+const CACHE_CONVERSATIONS_TTL = CacheTTL.conversations;
+const CACHE_MESSAGES_TTL = CacheTTL.messages;
 
 function conversationsCacheKey(userId: string): string {
-  return `cache:conversations:${userId}`;
+  return CacheKeys.conversations(userId);
 }
 
 function messagesCacheKey(conversationId: string): string {
-  return `cache:messages:${conversationId}`;
+  return CacheKeys.messages(conversationId);
 }
 
 async function invalidateConversationsCache(userId: string): Promise<void> {

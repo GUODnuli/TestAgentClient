@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type http from 'http';
 import { getConfig } from '../config/index.js';
 import { getLogger } from '../config/logger.js';
+import { NAMESPACES, CLIENT_EVENTS, chatRoom } from '../socket/namespaces.js';
 
 let io: SocketIOServer | null = null;
 
@@ -30,19 +31,19 @@ export async function registerSocketIO(app: FastifyInstance): Promise<void> {
   });
 
   // /client namespace
-  const clientNs = io.of('/client');
+  const clientNs = io.of(NAMESPACES.CLIENT);
 
   clientNs.on('connection', (socket) => {
     logger.info({ sid: socket.id }, 'Client connected');
 
-    socket.on('joinChatRoom', (conversationId: string) => {
-      const room = `chat-${conversationId}`;
+    socket.on(CLIENT_EVENTS.JOIN_CHAT_ROOM, (conversationId: string) => {
+      const room = chatRoom(conversationId);
       socket.join(room);
       logger.debug({ sid: socket.id, room }, 'Client joined room');
     });
 
-    socket.on('leaveChatRoom', (conversationId: string) => {
-      const room = `chat-${conversationId}`;
+    socket.on(CLIENT_EVENTS.LEAVE_CHAT_ROOM, (conversationId: string) => {
+      const room = chatRoom(conversationId);
       socket.leave(room);
       logger.debug({ sid: socket.id, room }, 'Client left room');
     });
@@ -53,7 +54,7 @@ export async function registerSocketIO(app: FastifyInstance): Promise<void> {
   });
 
   // /agent namespace
-  const agentNs = io.of('/agent');
+  const agentNs = io.of(NAMESPACES.AGENT);
 
   agentNs.on('connection', (socket) => {
     logger.info({ sid: socket.id }, 'Agent connected');

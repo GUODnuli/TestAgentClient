@@ -15,7 +15,7 @@ from agentscope.tool import ToolResponse
 from agentscope.message import TextBlock
 
 # 获取项目根目录
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 STORAGE_CHAT_DIR = (PROJECT_ROOT / "storage" / "chat").resolve()
 
 

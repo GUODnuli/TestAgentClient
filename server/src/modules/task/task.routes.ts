@@ -36,6 +36,15 @@ export async function registerTaskRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
+  // GET /api/tasks/statistics — must be registered before :id route
+  app.get(
+    '/api/tasks/statistics',
+    { preHandler: [authenticate] },
+    async (request: FastifyRequest, _reply: FastifyReply) => {
+      return taskService.getTaskStatistics(request.currentUser!.user_id);
+    }
+  );
+
   // GET /api/tasks/:id
   app.get(
     '/api/tasks/:id',
@@ -64,15 +73,6 @@ export async function registerTaskRoutes(app: FastifyInstance): Promise<void> {
     async (request: FastifyRequest, _reply: FastifyReply) => {
       const { id } = request.params as { id: string };
       return taskService.deleteTask(id);
-    }
-  );
-
-  // GET /api/tasks/statistics
-  app.get(
-    '/api/tasks/statistics',
-    { preHandler: [authenticate] },
-    async (request: FastifyRequest, _reply: FastifyReply) => {
-      return taskService.getTaskStatistics(request.currentUser!.user_id);
     }
   );
 }

@@ -10,8 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from jinja2 import Template
 
-from backend.common.test_models import TestReport, TestResult, TestCaseStatus
-from backend.common.logger import Logger
+from .test_models import TestReport, TestResult, TestCaseStatus
+from .logger import Logger
 
 
 class ReportGenerator:

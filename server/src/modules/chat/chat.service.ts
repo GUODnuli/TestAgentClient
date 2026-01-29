@@ -55,9 +55,9 @@ export async function sendMessage(
     userId,
     query,
     studioUrl,
-    llmProvider: 'dashscope',
-    modelName: 'qwen3-max-preview',
-    apiKey: '',
+    llmProvider: config.llm.provider,
+    modelName: config.llm.modelName,
+    apiKey: config.llm.apiKey,
   });
 
   return {
@@ -141,9 +141,9 @@ export async function* sendMessageStreaming(
     userId,
     query,
     studioUrl,
-    llmProvider: 'dashscope',
-    modelName: 'qwen3-max-preview',
-    apiKey: '',
+    llmProvider: config.llm.provider,
+    modelName: config.llm.modelName,
+    apiKey: config.llm.apiKey,
   });
 
   // Consume messages from agent manager via callback
@@ -177,7 +177,12 @@ export async function* sendMessageStreaming(
         const msg = messageQueue.shift()!;
 
         if (msg === null) {
-          // End signal
+          // End signal — yield done and exit
+          yield {
+            type: 'done',
+            conversation_id: conversationId,
+            timestamp: new Date().toISOString(),
+          };
           return;
         }
 
@@ -194,6 +199,13 @@ export async function* sendMessageStreaming(
         yield { type: 'heartbeat' };
       }
     }
+
+    // Agent stopped without sending end signal — yield done anyway
+    yield {
+      type: 'done',
+      conversation_id: conversationId,
+      timestamp: new Date().toISOString(),
+    };
   } finally {
     agentManager.removeSSECallbacks(replyId);
 
@@ -208,13 +220,6 @@ export async function* sendMessageStreaming(
       // Socket not ready
     }
   }
-
-  // Yield done event
-  yield {
-    type: 'done',
-    conversation_id: conversationId,
-    timestamp: new Date().toISOString(),
-  };
 }
 
 export async function interruptAgent(replyId: string): Promise<boolean> {

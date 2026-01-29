@@ -4,7 +4,7 @@ from agentscope.tool import ToolResponse
 from agentscope.message import TextBlock
 
 # 获取项目根目录的绝对路径（避免工作目录不一致问题）
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 STORAGE_CHAT_DIR = (PROJECT_ROOT / "storage" / "chat").resolve()
 STORAGE_CACHE_DIR = (PROJECT_ROOT / "storage" / "cache").resolve()
 

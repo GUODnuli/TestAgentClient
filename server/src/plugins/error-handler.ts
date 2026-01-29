@@ -1,11 +1,12 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyError } from 'fastify';
+import { ZodError } from 'zod';
 import { AppError } from '../common/errors.js';
 import { getLogger } from '../config/logger.js';
 
 export async function registerErrorHandler(app: FastifyInstance): Promise<void> {
   const logger = getLogger();
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error: FastifyError | AppError | ZodError | Error, _request, reply) => {
     if (error instanceof AppError) {
       return reply.status(error.statusCode).send({
         success: false,
@@ -14,8 +15,18 @@ export async function registerErrorHandler(app: FastifyInstance): Promise<void> 
       });
     }
 
+    // Zod validation errors (from schema.parse() in routes)
+    if (error instanceof ZodError) {
+      const messages = error.errors.map((e) => `${e.path.join('.')}: ${e.message}`);
+      return reply.status(400).send({
+        success: false,
+        error: 'VALIDATION_ERROR',
+        message: messages.join('; ') || '请求参数验证失败',
+      });
+    }
+
     // Fastify validation errors
-    if (error.validation) {
+    if ('validation' in error && (error as FastifyError).validation) {
       return reply.status(400).send({
         success: false,
         error: 'VALIDATION_ERROR',
@@ -24,7 +35,7 @@ export async function registerErrorHandler(app: FastifyInstance): Promise<void> 
     }
 
     // JWT errors from @fastify/jwt
-    if (error.statusCode === 401) {
+    if ('statusCode' in error && (error as FastifyError).statusCode === 401) {
       return reply.status(401).send({
         success: false,
         error: 'UNAUTHORIZED',

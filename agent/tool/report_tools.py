@@ -17,11 +17,11 @@ from agentscope.message import TextBlock
 
 # 导入项目模块
 import sys
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.common.test_models import (
+from common.test_models import (
     TestReport,
     TestResult,
     TestCaseStatus,
@@ -30,7 +30,7 @@ from backend.common.test_models import (
     AssertionType,
     AssertionOperator
 )
-from backend.common.report_generator import ReportGenerator
+from common.report_generator import ReportGenerator
 
 
 def generate_test_report(

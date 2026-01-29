@@ -3,9 +3,10 @@ import { getRedis } from '../config/redis.js';
 import { getPrisma } from '../config/database.js';
 import { getLogger } from '../config/logger.js';
 import { spawnAgentProcess } from './process-spawner.js';
+import { CacheKeys, CacheTTL } from '../cache/cache-keys.js';
 import type { SpawnAgentParams, PendingReply, AgentMessageData } from './types.js';
 
-const AGENT_REPLY_TTL = 3600; // 1 hour
+const AGENT_REPLY_TTL = CacheTTL.agentReply;
 
 export class AgentManager {
   /** Active child processes by replyId */
@@ -46,7 +47,7 @@ export class AgentManager {
     const redis = getRedis();
     try {
       await redis.setex(
-        `agent:reply:${replyId}`,
+        CacheKeys.agentReply(replyId),
         AGENT_REPLY_TTL,
         JSON.stringify({
           conversationId,
@@ -87,7 +88,7 @@ export class AgentManager {
         data: { status: 'RUNNING', pid: child.pid ?? null },
       });
       await redis.setex(
-        `agent:reply:${replyId}`,
+        CacheKeys.agentReply(replyId),
         AGENT_REPLY_TTL,
         JSON.stringify({
           conversationId,
@@ -229,7 +230,7 @@ export class AgentManager {
 
     // Clean up Redis
     try {
-      await redis.del(`agent:reply:${replyId}`);
+      await redis.del(CacheKeys.agentReply(replyId));
     } catch {
       // Non-critical
     }

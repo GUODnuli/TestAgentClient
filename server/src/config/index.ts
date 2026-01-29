@@ -16,6 +16,10 @@ const envSchema = z.object({
   AGENT_SCRIPT_PATH: z.string().default('../agent/main.py'),
   PYTHON_PATH: z.string().default('python'),
 
+  LLM_PROVIDER: z.string().default('dashscope'),
+  LLM_MODEL_NAME: z.string().default('qwen3-max-preview'),
+  LLM_API_KEY: z.string().default(''),
+
   STORAGE_ROOT: z.string().default('../storage'),
 });
 
@@ -56,6 +60,12 @@ function loadConfig() {
     agent: {
       scriptPath: env.AGENT_SCRIPT_PATH,
       pythonPath: env.PYTHON_PATH,
+    },
+
+    llm: {
+      provider: env.LLM_PROVIDER,
+      modelName: env.LLM_MODEL_NAME,
+      apiKey: env.LLM_API_KEY,
     },
 
     storage: {

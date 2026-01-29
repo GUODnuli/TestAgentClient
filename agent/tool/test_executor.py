@@ -16,11 +16,11 @@ from agentscope.message import TextBlock
 
 # 导入项目模块
 import sys
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.common.test_models import (
+from common.test_models import (
     TestCase,
     TestResult,
     Request,
@@ -30,7 +30,7 @@ from backend.common.test_models import (
     AssertionOperator,
     TestCaseStatus
 )
-from backend.common.engines.requests_engine import RequestsEngine
+from common.engines.requests_engine import RequestsEngine
 
 # 默认配置
 DEFAULT_BASE_URL = "http://localhost:8080"

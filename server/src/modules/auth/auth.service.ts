@@ -7,6 +7,7 @@ import { getConfig } from '../../config/index.js';
 import { createAccessToken, getTokenExpiresInSeconds } from './jwt.service.js';
 import { ValidationError, UnauthorizedError, ConflictError } from '../../common/errors.js';
 import { formatUser } from '../../common/utils.js';
+import { CacheKeys, CacheTTL } from '../../cache/cache-keys.js';
 import type { UserRole, UserStatus } from '@prisma/client';
 
 // Session management
@@ -19,7 +20,7 @@ async function createSession(
 ): Promise<void> {
   const logger = getLogger();
   const redis = getRedis();
-  const sessionKey = `session:${userId}`;
+  const sessionKey = CacheKeys.session(userId);
   const sessionTtl = getConfig().jwt.expiresInHours * 3600;
 
   try {
@@ -46,7 +47,7 @@ async function createSession(
 async function invalidateSession(userId: string): Promise<void> {
   const logger = getLogger();
   const redis = getRedis();
-  const sessionKey = `session:${userId}`;
+  const sessionKey = CacheKeys.session(userId);
 
   try {
     await redis.del(sessionKey);
@@ -58,7 +59,7 @@ async function invalidateSession(userId: string): Promise<void> {
 
 async function getSessionInfo(userId: string): Promise<Record<string, unknown> | null> {
   const redis = getRedis();
-  const sessionKey = `session:${userId}`;
+  const sessionKey = CacheKeys.session(userId);
 
   try {
     const data = await redis.get(sessionKey);

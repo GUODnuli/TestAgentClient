@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 import requests
 from jsonpath_ng import parse as jsonpath_parse
 
-from backend.common.test_models import (
+from ..test_models import (
     TestEngine,
     TestCase,
     TestResult,
@@ -25,7 +25,7 @@ from backend.common.test_models import (
     AssertionOperator,
     TestCaseStatus
 )
-from backend.common.logger import Logger
+from ..logger import Logger
 
 
 class RequestsEngine(TestEngine):

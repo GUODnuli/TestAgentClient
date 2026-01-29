@@ -5,6 +5,7 @@ import { getPrisma, disconnectPrisma } from './config/database.js';
 import { disconnectRedis } from './config/redis.js';
 import { buildApp } from './app.js';
 import { getAgentManager } from './agent/agent-manager.js';
+import { ensureStorageDirectories, cleanupOldFiles } from './storage/storage.service.js';
 
 async function main() {
   const logger = getLogger();
@@ -19,6 +20,10 @@ async function main() {
     process.exit(1);
   }
 
+  // Ensure storage directories exist
+  ensureStorageDirectories();
+  logger.info('Storage directories initialized');
+
   // Build and start Fastify
   const app = await buildApp();
 
@@ -26,6 +31,12 @@ async function main() {
     await app.listen({ port: config.port, host: config.host });
     logger.info(`Server listening on ${config.host}:${config.port}`);
     logger.info(`Environment: ${config.nodeEnv}`);
+
+    // Schedule periodic file cleanup (every 24 hours)
+    const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000;
+    setInterval(() => {
+      cleanupOldFiles(7);
+    }, CLEANUP_INTERVAL);
   } catch (err) {
     logger.error({ err }, 'Failed to start server');
     process.exit(1);
