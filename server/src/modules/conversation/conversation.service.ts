@@ -264,6 +264,24 @@ export async function createMessageInternal(
 }
 
 /**
+ * Internal: update conversation title without auth check (used by title generator)
+ */
+export async function updateConversationTitleInternal(
+  conversationId: string,
+  userId: string,
+  title: string
+): Promise<void> {
+  const prisma = getPrisma();
+
+  await prisma.conversation.update({
+    where: { id: conversationId },
+    data: { title },
+  });
+
+  await invalidateConversationsCache(userId);
+}
+
+/**
  * Internal: create conversation without formatted response
  */
 export async function createConversationInternal(userId: string, title: string) {

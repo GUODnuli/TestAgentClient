@@ -71,11 +71,32 @@
                       <div class="thinking-label">思考过程</div>
                       <div class="thinking-content">{{ msg.thinking }}</div>
                     </div>
-                    <!-- 正常回复内容 -->
-                    <MarkdownViewer 
-                      v-if="msg.content" 
-                      :content="msg.content" 
-                    />
+
+                    <!-- 事件驱动渲染（新模型） -->
+                    <template v-if="msg.events && msg.events.length > 0">
+                      <template v-for="(event, eIdx) in msg.events">
+                        <MarkdownViewer
+                          v-if="event.type === 'text'"
+                          :key="'text-' + eIdx"
+                          :content="event.content"
+                        />
+                        <ToolCallCard
+                          v-else-if="event.type === 'tool_call'"
+                          :key="'tool-' + eIdx"
+                          :tool="event"
+                          :result="findToolResult(msg.events, event.id)"
+                        />
+                        <!-- tool_result events are rendered inside ToolCallCard -->
+                      </template>
+                    </template>
+                    <!-- 兼容旧消息格式（无 events 字段） -->
+                    <template v-else>
+                      <MarkdownViewer
+                        v-if="msg.content"
+                        :content="msg.content"
+                      />
+                    </template>
+
                     <!-- 测试用例展示 -->
                     <div v-if="msg.testcases && msg.testcases.length > 0" class="testcases-block">
                       <div class="testcases-header">
@@ -83,8 +104,8 @@
                         <span>测试用例（共 {{ msg.testcases.length }} 个）</span>
                       </div>
                       <el-collapse class="testcases-list">
-                        <el-collapse-item 
-                          v-for="(testcase, idx) in msg.testcases" 
+                        <el-collapse-item
+                          v-for="(testcase, idx) in msg.testcases"
                           :key="testcase.id || idx"
                           :name="idx"
                         >
@@ -122,11 +143,11 @@
                         </el-collapse-item>
                       </el-collapse>
                     </div>
-                    <div v-else-if="loading && index === messages.length - 1" class="loading-dots">
+                    <div v-else-if="loading && index === messages.length - 1 && !msg.events?.length && !msg.content" class="loading-dots">
                       <span></span><span></span><span></span>
                     </div>
                   </template>
-                  <span v-if="loading && msg.role === 'assistant' && index === messages.length - 1 && msg.content" class="typing-cursor"></span>
+                  <span v-if="loading && msg.role === 'assistant' && index === messages.length - 1 && (msg.content || msg.events?.length)" class="typing-cursor"></span>
                 </div>
               </div>
             </div>
@@ -210,6 +231,8 @@ import api from '@/api'
 import { useChatStore } from '@/stores/chat'
 import MarkdownViewer from '@/components/MarkdownViewer.vue'
 import PlanStepBar from '@/components/PlanStepBar.vue'
+import ToolCallCard from '@/components/ToolCallCard.vue'
+import { SSEParser } from '@/utils/sse-parser.js'
 
 const chatStore = useChatStore()
 const { 
@@ -261,6 +284,31 @@ watch(currentConversationId, async (newId) => {
   }
 }, { immediate: true })
 
+/**
+ * Find tool_result event matching a tool_call by id.
+ * Used in template for ToolCallCard rendering.
+ */
+const findToolResult = (events, toolId) => {
+  if (!events || !toolId) return null
+  return events.find(e => e.type === 'tool_result' && e.id === toolId) || null
+}
+
+/**
+ * Merge adjacent text events in the events array to reduce DOM nodes.
+ * Modifies the array in-place for performance during streaming.
+ */
+const mergeAdjacentTextEvents = (events) => {
+  if (events.length < 2) return
+  const last = events[events.length - 1]
+  const secondLast = events[events.length - 2]
+  if (last.type === 'text' && secondLast.type === 'text') {
+    events.splice(events.length - 2, 2, {
+      type: 'text',
+      content: secondLast.content + last.content,
+    })
+  }
+}
+
 // 发送消息
 const sendMessage = async () => {
   if ((!inputMessage.value.trim() && !selectedFile.value) || loading.value) return
@@ -269,7 +317,7 @@ const sendMessage = async () => {
   let userMessage = inputMessage.value.trim()
   const hasFile = !!selectedFile.value
   const currentFile = selectedFile.value
-  
+
   inputMessage.value = ''
   selectedFile.value = null
   resetTextareaHeight()
@@ -281,8 +329,8 @@ const sendMessage = async () => {
       // 如果没有会话ID，先创建一个，否则上传会失败
       if (!currentConversationId.value) {
         try {
-          const newConv = await api.createConversation({ 
-            title: userMessage.substring(0, 50) || currentFile.name 
+          const newConv = await api.createConversation({
+            title: userMessage.substring(0, 50) || currentFile.name
           })
           currentConversationId.value = newConv.conversation_id
           await loadConversations()
@@ -299,7 +347,6 @@ const sendMessage = async () => {
         }
       } catch (err) {
         console.error('文件上传失败:', err)
-        // 继续发送消息，但提示上传失败
         fileInfoString = `\n\n[文件上传失败: ${currentFile.name}]`
       }
     }
@@ -317,12 +364,13 @@ const sendMessage = async () => {
 
     loading.value = true
 
-    // 添加空的助手消息占位
+    // 添加空的助手消息占位（使用 events 数组模型）
     const assistantMsgIndex = messages.value.length
     messages.value.push({
       role: 'assistant',
       content: '',
-      thinking: ''  // 思考过程
+      thinking: '',
+      events: [],
     })
 
     // 调用聊天接口(SSE流式)
@@ -344,73 +392,80 @@ const sendMessage = async () => {
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
-    let assistantResponse = ''
     let thinkingResponse = ''
+
+    // 使用缓冲式 SSE 解析器，修复 chunk 边界切断问题
+    const parser = new SSEParser(({ data: parsed }) => {
+      try {
+        if (typeof parsed !== 'object' || parsed === null) return
+        const msg = messages.value[assistantMsgIndex]
+
+        if (parsed.type === 'start') {
+          if (!currentConversationId.value) {
+            currentConversationId.value = parsed.conversation_id
+            loadConversations()
+          }
+          if (parsed.reply_id) {
+            currentReplyId.value = parsed.reply_id
+          }
+        } else if (parsed.type === 'plan_update' && parsed.data) {
+          currentPlanData.value = parsed.data
+        } else if (parsed.type === 'testcases' && parsed.data) {
+          const testcasesData = parsed.data
+          if (!msg.testcases) {
+            msg.testcases = []
+          }
+          msg.testcases.push(...testcasesData.testcases)
+        } else if (parsed.type === 'thinking' && parsed.content) {
+          thinkingResponse += parsed.content
+          msg.thinking = thinkingResponse
+        } else if (parsed.type === 'chunk' && parsed.content) {
+          // Text chunk — add as text event
+          msg.events.push({ type: 'text', content: parsed.content })
+          mergeAdjacentTextEvents(msg.events)
+          // Also maintain flat content for DB compatibility
+          msg.content = (msg.content || '') + parsed.content
+        } else if (parsed.type === 'tool_call') {
+          msg.events.push({
+            type: 'tool_call',
+            id: parsed.id,
+            name: parsed.name,
+            input: parsed.input,
+          })
+        } else if (parsed.type === 'tool_result') {
+          msg.events.push({
+            type: 'tool_result',
+            id: parsed.id,
+            name: parsed.name,
+            output: parsed.output,
+            success: parsed.success,
+          })
+        } else if (parsed.type === 'title_generated') {
+          chatStore.updateConversationTitle(parsed.conversation_id, parsed.title)
+        } else if (parsed.type === 'error') {
+          throw new Error(parsed.message || '流式输出错误')
+        }
+        // done, heartbeat, cancelled — no action needed for rendering
+      } catch (e) {
+        console.warn('处理SSE事件失败:', e)
+      }
+    })
 
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
 
       const chunk = decoder.decode(value, { stream: true })
-      const lines = chunk.split('\n')
+      parser.feed(chunk)
 
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.substring(6).trim()
-          
-          try {
-            const parsed = JSON.parse(data)
-            if (parsed.type === 'start') {
-              // 如果是新对话，更新对话ID并加载列表
-              if (!currentConversationId.value) {
-                currentConversationId.value = parsed.conversation_id
-                await loadConversations()
-              }
-              // 存储 reply_id 用于终止
-              if (parsed.reply_id) {
-                currentReplyId.value = parsed.reply_id
-              }
-            } else if (parsed.type === 'plan_update' && parsed.data) {
-              // 处理计划更新
-              currentPlanData.value = parsed.data
-            } else if (parsed.type === 'testcases' && parsed.data) {
-              // 处理测试用例推送
-              const testcasesData = parsed.data
-              console.log(`接收到 ${testcasesData.count} 个测试用例`, testcasesData)
-              
-              // 将测试用例添加到助手消息中（以特殊格式存储）
-              if (!messages.value[assistantMsgIndex].testcases) {
-                messages.value[assistantMsgIndex].testcases = []
-              }
-              messages.value[assistantMsgIndex].testcases.push(...testcasesData.testcases)
-              
-              // 添加提示文本
-              const summary = `\n\n📋 已生成 ${testcasesData.count} 个测试用例`
-              assistantResponse += summary
-              messages.value[assistantMsgIndex].content = assistantResponse
-              
-              await nextTick()
-              scrollToBottom()
-            } else if (parsed.type === 'thinking' && parsed.content) {
-              // 处理思考过程
-              thinkingResponse += parsed.content
-              messages.value[assistantMsgIndex].thinking = thinkingResponse
-              await nextTick()
-              scrollToBottom()
-            } else if (parsed.type === 'chunk' && parsed.content) {
-              assistantResponse += parsed.content
-              messages.value[assistantMsgIndex].content = assistantResponse
-              await nextTick()
-              scrollToBottom()
-            } else if (parsed.type === 'error') {
-              throw new Error(parsed.message || '流式输出错误')
-            }
-          } catch (e) {
-            console.warn('解析消息块失败:', e)
-          }
-        }
-      }
+      await nextTick()
+      scrollToBottom()
     }
+
+    // Flush any remaining buffered data
+    parser.flush()
+    await nextTick()
+    scrollToBottom()
 
   } catch (error) {
     console.error('发送消息失败:', error)
@@ -418,12 +473,13 @@ const sendMessage = async () => {
       const lastMsg = messages.value[messages.value.length - 1]
       if (lastMsg.role === 'assistant') {
         lastMsg.content = `抱歉,发送消息时出现错误: ${error.message}`
+        // Clear events so it falls back to content rendering
+        lastMsg.events = []
       }
     }
   } finally {
     loading.value = false
     isSending.value = false
-    // 清除 reply_id
     currentReplyId.value = null
   }
 }
@@ -709,6 +765,8 @@ onMounted(() => {
 
 .message-text {
   flex: 1;
+  min-width: 0;
+  overflow-x: hidden;
   color: var(--text-primary);
   font-size: 15px;
   line-height: 1.6;

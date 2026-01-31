@@ -6,7 +6,9 @@ import { getSocketManager } from '../../socket/socket-manager.js';
 import {
   createConversationInternal,
   createMessageInternal,
+  updateConversationTitleInternal,
 } from '../conversation/conversation.service.js';
+import { generateTitle } from '../../llm/title-generator.js';
 import type { AgentMessageData } from '../../agent/types.js';
 
 export async function sendMessage(
@@ -85,9 +87,11 @@ export async function* sendMessageStreaming(
   const config = getConfig();
 
   // Create conversation if needed
+  let isNewConversation = false;
   if (!conversationId) {
     const conv = await createConversationInternal(userId, message.slice(0, 50));
     conversationId = conv.id;
+    isNewConversation = true;
   }
 
   const replyId = uuidv4();
@@ -158,6 +162,12 @@ export async function* sendMessageStreaming(
     }
   });
 
+  // Async title generation for new conversations (non-blocking).
+  // Must be AFTER registerSSECallback so pushToSSEQueue finds the callback.
+  if (isNewConversation) {
+    generateAndUpdateTitle(conversationId, userId, message, replyId, agentManager);
+  }
+
   try {
     while (true) {
       // Wait for message or timeout
@@ -219,6 +229,33 @@ export async function* sendMessageStreaming(
     } catch {
       // Socket not ready
     }
+  }
+}
+
+/**
+ * Asynchronously generate a creative title for a new conversation
+ * and push it to the SSE stream. Fire-and-forget — errors are logged
+ * but never propagated.
+ */
+async function generateAndUpdateTitle(
+  conversationId: string,
+  userId: string,
+  message: string,
+  replyId: string,
+  agentManager: ReturnType<typeof getAgentManager>
+): Promise<void> {
+  const logger = getLogger();
+  try {
+    const title = await generateTitle(message);
+    await updateConversationTitleInternal(conversationId, userId, title);
+    agentManager.pushToSSEQueue(replyId, {
+      type: 'title_generated',
+      conversation_id: conversationId,
+      title,
+    } as unknown as AgentMessageData);
+    logger.info({ conversationId, title }, 'Title generated for new conversation');
+  } catch (err) {
+    logger.error({ err, conversationId }, 'Failed to generate title');
   }
 }
 

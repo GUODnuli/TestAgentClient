@@ -4,7 +4,8 @@ import { getPrisma } from '../config/database.js';
 import { getLogger } from '../config/logger.js';
 import { spawnAgentProcess } from './process-spawner.js';
 import { CacheKeys, CacheTTL } from '../cache/cache-keys.js';
-import type { SpawnAgentParams, PendingReply, AgentMessageData } from './types.js';
+import type { SpawnAgentParams, PendingReply, AgentMessageData, AgentEvent } from './types.js';
+import { getToolDisplayName, isToolHidden } from './tool-display.js';
 
 const AGENT_REPLY_TTL = CacheTTL.agentReply;
 
@@ -17,6 +18,10 @@ export class AgentManager {
   private pendingReplies = new Map<string, PendingReply>();
   /** SSE message queues by replyId (callbacks waiting for messages) */
   private messageCallbacks = new Map<string, Array<(msg: AgentMessageData | null) => void>>();
+  /** Track replyIds that have already had testcases extracted */
+  private extractedTestcaseReplies = new Set<string>();
+  /** Track tool call IDs that belong to hidden tools (for filtering tool_result by id) */
+  private hiddenToolCallIds = new Set<string>();
 
   private get logger() {
     return getLogger();
@@ -180,6 +185,78 @@ export class AgentManager {
 
     // Also push raw msg for testcase extraction
     await this.extractAndPushTestcases(replyId, textContent);
+  }
+
+  /**
+   * Handle structured events from the new agent hook format.
+   *
+   * - Text events: accumulated for DB storage, forwarded to SSE.
+   * - Tool events: logged with original names, then filtered (hidden tools)
+   *   and mapped (Chinese display names) before pushing to SSE.
+   */
+  async handleAgentEvents(replyId: string, events: AgentEvent[]): Promise<void> {
+    const reply = this.pendingReplies.get(replyId);
+    if (!reply) {
+      this.logger.warn({ replyId }, 'No pending reply found for agent events');
+      return;
+    }
+
+    for (const event of events) {
+      if (event.type === 'text') {
+        // Accumulate text content for DB storage
+        const existing = reply.messages[0];
+        if (existing) {
+          const accumulated = (existing._accumulated_content ?? '') + event.content;
+          reply.messages[0] = {
+            ...existing,
+            _accumulated_content: accumulated,
+            content: [{ type: 'text', text: accumulated }],
+          };
+        } else {
+          reply.messages.push({
+            _accumulated_content: event.content,
+            content: [{ type: 'text', text: event.content }],
+            role: 'assistant',
+          });
+        }
+
+        // Push text as chunk event to SSE (same format as before for text)
+        this.pushToSSEQueue(replyId, {
+          type: 'chunk',
+          content: event.content,
+        } as unknown as AgentMessageData);
+
+        // Extract testcases from accumulated text
+        const accumulatedText = reply.messages[0]?._accumulated_content ?? '';
+        await this.extractAndPushTestcases(replyId, accumulatedText);
+      } else if (event.type === 'tool_call') {
+        // Skip hidden tools — do not push to frontend
+        if (isToolHidden(event.name)) {
+          this.hiddenToolCallIds.add(event.id);
+          this.logger.info(
+            { replyId, tool: event.name, toolId: event.id },
+            'Tool call hidden from frontend'
+          );
+          continue;
+        }
+        // Map tool name to Chinese display name for frontend
+        const displayEvent = {
+          ...event,
+          name: getToolDisplayName(event.name),
+        };
+        this.pushToSSEQueue(replyId, displayEvent as unknown as AgentMessageData);
+      } else if (event.type === 'tool_result') {
+        // Skip results for hidden tools (match by name or by tracked id)
+        if (isToolHidden(event.name) || this.hiddenToolCallIds.has(event.id)) {
+          continue;
+        }
+        const displayEvent = {
+          ...event,
+          name: getToolDisplayName(event.name),
+        };
+        this.pushToSSEQueue(replyId, displayEvent as unknown as AgentMessageData);
+      }
+    }
   }
 
   /**
@@ -377,7 +454,7 @@ export class AgentManager {
   /**
    * Push message to SSE queue callbacks
    */
-  private pushToSSEQueue(replyId: string, msg: AgentMessageData | null): void {
+  pushToSSEQueue(replyId: string, msg: AgentMessageData | null): void {
     const callbacks = this.messageCallbacks.get(replyId);
     if (callbacks) {
       for (const cb of callbacks) {
@@ -390,6 +467,7 @@ export class AgentManager {
    * Extract testcases from text and push as SSE event
    */
   private async extractAndPushTestcases(replyId: string, textContent: string): Promise<void> {
+    if (this.extractedTestcaseReplies.has(replyId)) return;
     if (!textContent || textContent.length < 100) return;
 
     const keywords = ['"testcases"', '"interface_name"', 'generate_positive_cases', 'generate_negative_cases'];
@@ -402,6 +480,8 @@ export class AgentManager {
       const data = JSON.parse(match[0]);
       const testcases = data.testcases;
       if (!Array.isArray(testcases) || testcases.length === 0) return;
+
+      this.extractedTestcaseReplies.add(replyId);
 
       this.pushToSSEQueue(replyId, {
         type: 'testcases',
@@ -444,6 +524,8 @@ export class AgentManager {
     this.conversationAgents.clear();
     this.pendingReplies.clear();
     this.messageCallbacks.clear();
+    this.extractedTestcaseReplies.clear();
+    this.hiddenToolCallIds.clear();
   }
 }
 

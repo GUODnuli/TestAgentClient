@@ -94,6 +94,12 @@ export const useChatStore = defineStore('chat', () => {
     collapsedGroups.value[label] = !collapsedGroups.value[label]
   }
 
+  const updateConversationTitle = (conversationId, title) => {
+    conversations.value = conversations.value.map(c =>
+      c.conversation_id === conversationId ? { ...c, title } : c
+    )
+  }
+
   return {
     conversations,
     currentConversationId,
@@ -104,6 +110,7 @@ export const useChatStore = defineStore('chat', () => {
     loadConversations,
     startNewChat,
     deleteConversation,
-    toggleGroup
+    toggleGroup,
+    updateConversationTitle
   }
 })

@@ -1,20 +1,35 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { getLogger } from '../../config/logger.js';
 import * as hookService from './hook.service.js';
+import type { AgentEvent } from '../../agent/types.js';
 
 export async function registerHookRoutes(app: FastifyInstance): Promise<void> {
   const logger = getLogger();
 
   // POST /trpc/pushMessageToChatAgent
-  app.post('/trpc/pushMessageToChatAgent', async (request: FastifyRequest, reply: FastifyReply) => {
+  // Supports both new format { replyId, events: AgentEvent[] }
+  // and legacy format { replyId, msg: Record<string, unknown> }
+  app.post('/trpc/pushMessageToChatAgent', { config: { rateLimit: false } }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const body = request.body as { replyId: string; msg: Record<string, unknown> };
+      const body = request.body as {
+        replyId: string;
+        events?: AgentEvent[];
+        msg?: Record<string, unknown>;
+      };
 
-      if (!body.replyId || !body.msg) {
-        return reply.status(400).send({ success: false, error: 'Missing replyId or msg' });
+      if (!body.replyId) {
+        return reply.status(400).send({ success: false, error: 'Missing replyId' });
       }
 
-      await hookService.handlePushMessage(body.replyId, body.msg);
+      if (body.events && Array.isArray(body.events)) {
+        // New structured events format
+        await hookService.handlePushEvents(body.replyId, body.events);
+      } else if (body.msg) {
+        // Legacy format
+        await hookService.handlePushMessage(body.replyId, body.msg);
+      } else {
+        return reply.status(400).send({ success: false, error: 'Missing events or msg' });
+      }
 
       return { success: true };
     } catch (err) {
@@ -24,7 +39,7 @@ export async function registerHookRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /trpc/pushFinishedSignalToChatAgent
-  app.post('/trpc/pushFinishedSignalToChatAgent', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post('/trpc/pushFinishedSignalToChatAgent', { config: { rateLimit: false } }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const body = request.body as { replyId: string };
 
