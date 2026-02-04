@@ -1,3 +1,5 @@
+export type AgentMode = 'direct' | 'coordinator';
+
 export interface SpawnAgentParams {
   conversationId: string;
   replyId: string;
@@ -11,6 +13,7 @@ export interface SpawnAgentParams {
   workspace?: string;
   clientKwargs?: Record<string, unknown>;
   generateKwargs?: Record<string, unknown>;
+  mode?: AgentMode;
 }
 
 export interface PendingReply {

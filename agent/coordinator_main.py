@@ -9,8 +9,18 @@ Coordinator Agent 入口文件
 通过命令行参数 --mode 切换，默认为 direct 模式保持向后兼容。
 """
 import asyncio
+import io
+import os
 import socket
 import sys
+
+# Force UTF-8 encoding on Windows
+if sys.platform == 'win32':
+    # Set console code page to UTF-8
+    os.system('chcp 65001 >nul 2>&1')
+    # Reconfigure stdout/stderr to use UTF-8
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -107,6 +117,78 @@ def _create_progress_callback(studio_url: str, reply_id: str):
     return callback
 
 
+def _push_coordinator_result_to_frontend(studio_url: str, reply_id: str, result: dict):
+    """将 Coordinator 执行结果推送到前端"""
+    import httpx
+
+    if not studio_url or not reply_id:
+        return
+
+    # 生成结果摘要文本
+    status = result.get("status", "unknown")
+    objective = result.get("objective", "")
+    error = result.get("error")
+
+    # 构建结果摘要
+    summary_parts = []
+    summary_parts.append(f"## Coordinator 执行完成\n")
+    summary_parts.append(f"**状态**: {status}\n")
+
+    if error:
+        summary_parts.append(f"**错误**: {error}\n")
+
+    # 添加 Phase 结果摘要
+    phase_results = result.get("phase_results", [])
+    if phase_results:
+        summary_parts.append(f"\n### 执行阶段 ({len(phase_results)} 个)\n")
+        for i, phase in enumerate(phase_results, 1):
+            phase_name = phase.get("phase_name", f"Phase {i}")
+            phase_status = phase.get("status", "unknown")
+            summary_parts.append(f"- **{phase_name}**: {phase_status}\n")
+
+            # 添加 Worker 结果
+            worker_results = phase.get("worker_results", {})
+            for worker_name, worker_result in worker_results.items():
+                worker_status = worker_result.get("status", "unknown")
+                worker_output = worker_result.get("output", "")
+                if worker_output and len(str(worker_output)) > 200:
+                    worker_output = str(worker_output)[:200] + "..."
+                summary_parts.append(f"  - {worker_name}: {worker_status}\n")
+
+    summary_text = "".join(summary_parts)
+
+    # 推送文本结果
+    events = [{
+        "type": "text",
+        "content": summary_text,
+        "sequence": 0,
+    }]
+
+    payload = {
+        "replyId": reply_id,
+        "events": events,
+    }
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            client.post(
+                f"{studio_url}/trpc/pushMessageToChatAgent",
+                json=payload,
+            )
+    except Exception as e:
+        print(f"[Hook Warning] Failed to push coordinator result: {e}")
+
+    # 发送完成信号
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            client.post(
+                f"{studio_url}/trpc/pushFinishedSignalToChatAgent",
+                json={"replyId": reply_id},
+            )
+    except Exception as e:
+        print(f"[Hook Warning] Failed to push finished signal: {e}")
+
+
 async def run_direct_mode(args, toolkit: Toolkit, model, formatter):
     """直接模式：使用单个 ReActAgent"""
     # 注册类级 Hook
@@ -196,12 +278,29 @@ async def run_coordinator_mode(args, toolkit: Toolkit, model):
         query = json5.loads(args.query)
 
     # 提取目标文本
-    if isinstance(query, dict):
+    # query 格式可能是:
+    # - 数组: [{"type": "text", "text": "..."}]
+    # - 字典: {"content": "..."} 或 {"text": "..."}
+    # - 字符串: "..."
+    if isinstance(query, list):
+        # 从数组中提取所有 text 内容
+        texts = []
+        for item in query:
+            if isinstance(item, dict) and item.get("type") == "text":
+                texts.append(item.get("text", ""))
+            elif isinstance(item, str):
+                texts.append(item)
+        objective = "\n".join(texts)
+    elif isinstance(query, dict):
         objective = query.get("content", query.get("text", str(query)))
     else:
         objective = str(query)
 
     print(f"[INFO] 用户目标: {objective[:100]}...")
+
+    # 配置 Hook（用于推送结果到前端）
+    AgentHooks.url = args.studio_url
+    AgentHooks.reply_id = args.reply_id
 
     # 执行 Coordinator
     result = await coordinator.execute(
@@ -214,6 +313,9 @@ async def run_coordinator_mode(args, toolkit: Toolkit, model):
     print(f"[INFO] 执行结果: {result.get('status')}")
     if result.get("error"):
         print(f"[ERROR] {result['error']}")
+
+    # 将结果推送到前端
+    _push_coordinator_result_to_frontend(args.studio_url, args.reply_id, result)
 
     return result
 

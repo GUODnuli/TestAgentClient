@@ -10,7 +10,7 @@ export async function handlePushEvents(replyId: string, events: AgentEvent[]): P
   const logger = getLogger();
   const agentManager = getAgentManager();
 
-  logger.info({ replyId, eventCount: events.length }, 'Hook: received agent events');
+  logger.debug({ replyId, eventCount: events.length }, 'Hook: received agent events');
 
   await agentManager.handleAgentEvents(replyId, events);
 
@@ -33,7 +33,7 @@ export async function handlePushMessage(replyId: string, msg: Record<string, unk
   const logger = getLogger();
   const agentManager = getAgentManager();
 
-  logger.info({ replyId }, 'Hook: received agent message (legacy)');
+  logger.debug({ replyId }, 'Hook: received agent message (legacy)');
 
   await agentManager.handleAgentMessage(replyId, msg as AgentMessageData);
 

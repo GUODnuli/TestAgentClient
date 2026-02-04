@@ -76,7 +76,8 @@ TestAgent Client 是 TestAgent 项目的 Python Agent 核心组件，基于 Agen
 ```
 Client/
 ├── agent/                      # Agent 核心
-│   ├── main.py                # 入口点
+│   ├── coordinator_main.py    # 统一入口点 (支持 direct/coordinator 模式)
+│   ├── main.py                # 旧入口 (已废弃，重定向到 coordinator_main)
 │   ├── args.py                # CLI 参数定义
 │   ├── hook.py                # 事件推送系统
 │   ├── model.py               # LLM 适配器
@@ -84,6 +85,16 @@ Client/
 │   ├── settings_loader.py     # 配置加载
 │   ├── tool_registry.py       # 工具注册与管理
 │   ├── tool_groups.py         # 工具组定义
+│   ├── coordinator/           # Coordinator 系统
+│   │   ├── coordinator.py    # 主协调器
+│   │   ├── task_planner.py   # 任务规划
+│   │   ├── phase_scheduler.py # Phase 调度
+│   │   ├── result_evaluator.py # 结果评估
+│   │   └── error_recovery.py # 错误恢复
+│   ├── worker/                # Worker 执行框架
+│   │   ├── worker_loader.py  # Worker 加载器
+│   │   ├── worker_runner.py  # Worker 执行器
+│   │   └── modes/            # 执行模式 (react/single/loop)
 │   ├── plan/                  # 规划系统
 │   │   └── plan_to_hint.py   # 规划提示生成
 │   ├── tool/                  # 工具实现
@@ -96,21 +107,31 @@ Client/
 │   │   └── engines/          # 测试执行引擎
 │   └── utils/                 # 工具函数
 ├── server/                    # Node.js Server
-│   └── src/
-│       ├── agent/            # Agent 进程管理
-│       ├── modules/          # 功能模块
-│       └── config/           # 配置
+│   ├── src/
+│   │   ├── agent/            # Agent 进程管理
+│   │   ├── modules/          # 功能模块
+│   │   └── config/           # 配置
+│   ├── start-dev.ps1         # PowerShell 启动脚本 (UTF-8 编码)
+│   └── .env.example          # 环境变量模板
 ├── .testagent/                # 配置与扩展
 │   ├── settings.example.json # 配置模板
-│   ├── agents/               # Agent 定义
+│   ├── agents/               # Worker Agent 定义
+│   │   ├── planner.md       # 规划 Agent
+│   │   ├── executor.md      # 执行 Agent
+│   │   ├── analyzer.md      # 分析 Agent
+│   │   ├── reporter.md      # 报告 Agent
+│   │   └── validator.md     # 验证 Agent
 │   ├── skills/               # 技能扩展
 │   ├── commands/             # 命令扩展
 │   └── rules/                # 规则定义
 ├── prompts/                   # 系统提示词
-│   └── system_prompt.md
+│   ├── system_prompt.md
+│   └── coordinator/          # Coordinator 提示词
 ├── frontend/                  # Vue 前端 (开发中)
 ├── storage/                   # 数据存储
 ├── scripts/                   # 脚本工具
+├── .venv/                     # Python 虚拟环境 (gitignore)
+├── docker-compose.yml         # Docker 服务 (PostgreSQL, Redis)
 ├── cli.py                     # CLI 入口
 └── requirements.txt           # Python 依赖
 ```
@@ -125,7 +146,18 @@ Client/
 ### 安装
 
 ```bash
-# Python 依赖
+# 创建 Python 虚拟环境
+python -m venv .venv
+
+# 激活虚拟环境
+# Windows PowerShell:
+.venv\Scripts\Activate.ps1
+# Windows CMD:
+.venv\Scripts\activate.bat
+# Linux/macOS:
+source .venv/bin/activate
+
+# 安装 Python 依赖
 pip install -r requirements.txt
 
 # Node.js 依赖 (Server)
@@ -139,23 +171,64 @@ npm install
 # 复制配置模板
 cp .testagent/settings.example.json .testagent/settings.json
 
-# 编辑配置文件，设置 MCP 服务器等
+# 复制环境变量配置
+cd server
+cp .env.example .env
+
+# 编辑 .env 文件，配置数据库、API Key 等
 ```
 
 ### 运行
 
-```bash
-# 启动 Server
-cd server
-npm run dev
+#### Windows PowerShell 编码设置
 
-# 或直接运行 Agent (用于调试)
-python agent/main.py --query '{"content": "Hello"}' \
+在 Windows PowerShell 中运行时，需要先设置 UTF-8 编码以正确显示中文：
+
+```powershell
+# 方式一：使用启动脚本（推荐）
+cd server
+.\start-dev.ps1
+
+# 方式二：手动设置编码后运行
+chcp 65001
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+npm run dev
+```
+
+#### 启动服务
+
+```bash
+# 1. 启动 PostgreSQL 和 Redis（使用 Docker）
+docker-compose up -d
+
+# 2. 初始化数据库
+cd server
+npx prisma migrate dev
+
+# 3. 启动 Server
+npm run dev
+```
+
+#### 直接运行 Agent (调试模式)
+
+```bash
+# 使用虚拟环境中的 Python
+python agent/coordinator_main.py --query '{"content": "Hello"}' \
   --llmProvider dashscope \
   --modelName qwen-max \
   --apiKey YOUR_API_KEY \
-  --workspace ./storage
+  --workspace ./storage \
+  --mode direct
 ```
+
+#### Agent 执行模式
+
+支持两种执行模式，通过 `--mode` 参数或 `AGENT_MODE` 环境变量切换：
+
+| 模式 | 说明 |
+|------|------|
+| `direct` | 单 Agent 模式，使用单个 ReActAgent 处理所有请求（默认） |
+| `coordinator` | 协调模式，使用 Coordinator 分解任务并调度多个 Worker |
 
 ## 配置说明
 
@@ -199,6 +272,7 @@ python agent/main.py --query '{"content": "Hello"}' \
 | `--studio_url` | Server 回调地址 |
 | `--conversation_id` | 会话 ID |
 | `--reply_id` | 回复 ID |
+| `--mode` | 执行模式：`direct`（单 Agent）或 `coordinator`（多 Worker 协调） |
 
 ## 扩展开发
 

@@ -1,5 +1,5 @@
 # MCP Interface Test Agent - Python Dependencies
-# (Python Agent only — backend server is now Node.js)
+# (Python Agent only - backend server is now Node.js)
 
 # Agent Framework
 agentscope>=0.1.0

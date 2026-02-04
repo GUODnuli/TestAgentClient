@@ -21,6 +21,9 @@ export function spawnAgentProcess(params: SpawnAgentParams): ChildProcess {
   const agentScript = path.resolve(config.agent.scriptPath);
   const pythonPath = config.agent.pythonPath;
 
+  // Determine agent mode: use params.mode if provided, otherwise fall back to config default
+  const agentMode = params.mode ?? config.agent.mode ?? 'direct';
+
   const args = [
     agentScript,
     '--query-from-stdin',
@@ -32,6 +35,7 @@ export function spawnAgentProcess(params: SpawnAgentParams): ChildProcess {
     '--apiKey', params.apiKey,
     '--writePermission', String(params.writePermission ?? false),
     '--workspace', params.workspace ?? path.resolve('.'),
+    '--mode', agentMode,
   ];
 
   if (params.clientKwargs) {
@@ -48,8 +52,15 @@ export function spawnAgentProcess(params: SpawnAgentParams): ChildProcess {
 
   const env = {
     ...process.env,
+    // Force UTF-8 encoding for Python
     PYTHONIOENCODING: 'utf-8',
     PYTHONUTF8: '1',
+    PYTHONLEGACYWINDOWSSTDIO: '0',
+    // Windows console UTF-8
+    LANG: 'en_US.UTF-8',
+    LC_ALL: 'en_US.UTF-8',
+    CHCP: '65001',
+    // Proxy settings
     NO_PROXY: 'localhost,127.0.0.1,dashscope.aliyuncs.com,aliyuncs.com',
     no_proxy: 'localhost,127.0.0.1,dashscope.aliyuncs.com,aliyuncs.com',
   };
