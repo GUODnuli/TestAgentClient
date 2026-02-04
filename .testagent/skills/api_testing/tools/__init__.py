@@ -11,7 +11,7 @@ This package contains domain-specific tools for API testing:
 Tools are dynamically loaded by the skill system based on SKILL.md configuration.
 """
 
-from .doc_parser import read_document, extract_api_spec, validate_api_spec
+from .doc_parser import extract_api_spec, validate_api_spec
 from .case_generator import (
     generate_positive_cases,
     generate_negative_cases,
@@ -21,8 +21,7 @@ from .test_executor import execute_api_test, validate_response, capture_metrics
 from .report_tools import generate_test_report, diagnose_failures, suggest_improvements
 
 __all__ = [
-    # Document Parser
-    "read_document",
+    # API Spec Parser (read_document provided by MCP Server or base read_file)
     "extract_api_spec",
     "validate_api_spec",
     # Case Generator

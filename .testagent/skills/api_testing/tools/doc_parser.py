@@ -1,173 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-文档解析工具集
+API 规范解析工具集
 
-提供文档读取、API规范提取、规范验证等功能。
-支持 .docx/.txt/.md 格式的接口文档解析。
+提供 API 规范提取和验证功能。
+文档读取由 MCP Server 的 read_document 或 base tools 的 read_file 处理。
 
 Note: This tool is loaded dynamically from the api_testing skill.
 """
 
 import json
 import re
-import sys
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from agentscope.tool import ToolResponse
 from agentscope.message import TextBlock
-
-# Add project root to path for common module access
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-# Try to use ToolConfig for workspace-aware path resolution
-try:
-    from agent.tool.base.config import ToolConfig
-    USE_TOOL_CONFIG = True
-except ImportError:
-    USE_TOOL_CONFIG = False
-
-# Fallback storage paths (used when ToolConfig is not available)
-STORAGE_CHAT_DIR = (PROJECT_ROOT / "storage" / "chat").resolve()
-
-
-def _get_storage_dir() -> Path:
-    """Get the storage directory for uploaded files."""
-    if USE_TOOL_CONFIG:
-        try:
-            config = ToolConfig.get()
-            return config.workspace / "storage" / "chat"
-        except RuntimeError:
-            pass
-    return STORAGE_CHAT_DIR
-
-
-def read_document(file_path: str) -> ToolResponse:
-    """
-    Read and parse document content from uploaded files.
-
-    Supports .docx, .txt, .md formats. Extracts plain text content
-    for further processing by other tools.
-
-    Args:
-        file_path: Relative path to file (relative to storage/chat directory)
-                   Example: "user123/conv456/api_spec.docx"
-
-    Returns:
-        ToolResponse containing document text content or error message
-    """
-    try:
-        base_dir = _get_storage_dir()
-        target_path = (base_dir / file_path).resolve()
-
-        # 路径安全校验
-        try:
-            target_path.relative_to(base_dir)
-        except ValueError:
-            return ToolResponse(
-                content=[TextBlock(
-                    type="text",
-                    text=json.dumps({
-                        "status": "error",
-                        "error_code": "ACCESS_DENIED",
-                        "message": f"Access denied: path traversal detected"
-                    }, ensure_ascii=False)
-                )]
-            )
-
-        if not target_path.exists():
-            return ToolResponse(
-                content=[TextBlock(
-                    type="text",
-                    text=json.dumps({
-                        "status": "error",
-                        "error_code": "FILE_NOT_FOUND",
-                        "message": f"File not found: {file_path}"
-                    }, ensure_ascii=False)
-                )]
-            )
-
-        suffix = target_path.suffix.lower()
-        content = ""
-
-        if suffix == ".docx":
-            content = _parse_docx(target_path)
-        elif suffix in [".txt", ".md"]:
-            content = target_path.read_text(encoding="utf-8")
-        elif suffix == ".pdf":
-            return ToolResponse(
-                content=[TextBlock(
-                    type="text",
-                    text=json.dumps({
-                        "status": "error",
-                        "error_code": "UNSUPPORTED_FORMAT",
-                        "message": "PDF format not yet supported. Please convert to .docx or .txt"
-                    }, ensure_ascii=False)
-                )]
-            )
-        else:
-            return ToolResponse(
-                content=[TextBlock(
-                    type="text",
-                    text=json.dumps({
-                        "status": "error",
-                        "error_code": "UNSUPPORTED_FORMAT",
-                        "message": f"Unsupported file format: {suffix}. Supported: .docx, .txt, .md"
-                    }, ensure_ascii=False)
-                )]
-            )
-
-        return ToolResponse(
-            content=[TextBlock(
-                type="text",
-                text=json.dumps({
-                    "status": "success",
-                    "file_path": file_path,
-                    "format": suffix,
-                    "content": content,
-                    "content_length": len(content)
-                }, ensure_ascii=False)
-            )]
-        )
-
-    except Exception as e:
-        return ToolResponse(
-            content=[TextBlock(
-                type="text",
-                text=json.dumps({
-                    "status": "error",
-                    "error_code": "PARSE_ERROR",
-                    "message": f"Failed to parse document: {str(e)}"
-                }, ensure_ascii=False)
-            )]
-        )
-
-
-def _parse_docx(file_path: Path) -> str:
-    """解析 .docx 文件内容"""
-    try:
-        from docx import Document
-    except ImportError:
-        raise ImportError("python-docx library required. Install via: pip install python-docx")
-
-    doc = Document(str(file_path))
-    paragraphs = []
-
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        if text:
-            paragraphs.append(text)
-
-    # 提取表格内容
-    for table in doc.tables:
-        for row in table.rows:
-            row_text = " | ".join(cell.text.strip() for cell in row.cells)
-            if row_text.strip(" |"):
-                paragraphs.append(row_text)
-
-    return "\n".join(paragraphs)
 
 
 def extract_api_spec(document_text: str) -> ToolResponse:
@@ -178,7 +24,7 @@ def extract_api_spec(document_text: str) -> ToolResponse:
     endpoint, method, parameters, and expected responses.
 
     Args:
-        document_text: Plain text content from document (output of read_document)
+        document_text: Plain text content from document (use read_document or read_file first)
 
     Returns:
         ToolResponse containing extracted API specification in JSON format

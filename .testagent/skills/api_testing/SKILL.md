@@ -10,21 +10,22 @@ description: >
 version: 1.0.0
 tools_dir: tools
 allowed_tools:
-  - read_document
+  # API Spec Tools (read_document from MCP, read_file from base)
   - extract_api_spec
   - validate_api_spec
-  - generate_positive_cases   
+  # Test Case Generation
+  - generate_positive_cases
   - generate_negative_cases
   - generate_security_cases
+  - apply_business_rules
+  # Test Execution
   - execute_api_test
   - validate_response
   - capture_metrics
+  # Reporting
   - generate_test_report
   - diagnose_failures
   - suggest_improvements
-  - list_uploaded_files
-  - safe_view_text_file
-  - safe_write_text_file
 tags: [api, testing, quality-assurance, test-generation, test-execution, report]
 ---
 
