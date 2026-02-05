@@ -22,6 +22,16 @@ from agentscope.tool import Toolkit
 
 from .worker_loader import WorkerConfig
 
+# 记忆系统导入
+try:
+    from ..memory import WorkingMemory, ContentType
+except ImportError:
+    try:
+        from memory import WorkingMemory, ContentType
+    except ImportError:
+        WorkingMemory = None
+        ContentType = None
+
 # 尝试导入 model 模块获取 formatter
 try:
     from model import get_formatter
@@ -162,6 +172,7 @@ class WorkerRunner:
         formatter: Optional[FormatterBase] = None,
         progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         message_queue: Optional[asyncio.Queue] = None,
+        memory_enabled: bool = True,
     ):
         """
         初始化 Worker 执行器
@@ -172,6 +183,8 @@ class WorkerRunner:
             toolkit: 工具集（可选，如果为 None 将创建空工具集）
             formatter: 消息格式化器（可选，如果为 None 将尝试自动获取）
             progress_callback: 进度回调函数，签名为 (event_type, data)
+            message_queue: Agent 消息队列
+            memory_enabled: 是否启用工作记忆
         """
         self.config = config
         self.model = model
@@ -179,10 +192,14 @@ class WorkerRunner:
         self.formatter = formatter
         self.progress_callback = progress_callback
         self.message_queue = message_queue  # 用于收集 Agent 输出的消息队列
+        self.memory_enabled = memory_enabled and WorkingMemory is not None
 
         # 运行状态
         self._cancelled = False
         self._current_task: Optional[WorkerTask] = None
+
+        # 工作记忆（每次任务执行时初始化）
+        self._working_memory: Optional["WorkingMemory"] = None
 
     async def run(self, task: WorkerTask) -> WorkerResult:
         """
@@ -201,6 +218,15 @@ class WorkerRunner:
 
         # 应用配置覆盖
         effective_config = self._apply_config_override(task.config_override)
+
+        # 初始化工作记忆
+        if self.memory_enabled and WorkingMemory is not None:
+            self._working_memory = WorkingMemory(
+                worker_name=self.config.name,
+                plan_id=task.context.get("plan_id") or task.session_id,
+                phase=task.context.get("phase_number")
+            )
+            self._working_memory.initialize()
 
         start_time = time.time()
         result = WorkerResult(
@@ -245,6 +271,11 @@ class WorkerRunner:
         finally:
             result.duration_ms = int((time.time() - start_time) * 1000)
             self._current_task = None
+
+            # 清理工作记忆
+            if self._working_memory is not None:
+                self._working_memory.clear()
+                self._working_memory = None
 
         self._emit_progress("task_completed", {
             "task_id": task.task_id,
@@ -533,9 +564,55 @@ class WorkerRunner:
         if task.input_data:
             parts.append(f"## Input\n```json\n{json.dumps(task.input_data, ensure_ascii=False, indent=2)}\n```")
 
-        # 上下文信息
-        if task.context:
-            parts.append(f"## Context\n```json\n{json.dumps(task.context, ensure_ascii=False, indent=2)}\n```")
+        # 从记忆上下文中提取前序 Phase 的结果（避免重复读取文件）
+        memory_context = task.context.get("memory_context", {})
+        previous_outputs = memory_context.get("previous_outputs", {})
+        if previous_outputs:
+            memory_parts = ["## Previous Phase Results (from memory)"]
+            memory_parts.append("")
+            memory_parts.append("**CRITICAL: The following data contains COMPLETE results from previous phases.**")
+            memory_parts.append("**DO NOT re-read files, DO NOT re-fetch data, DO NOT call tools to get information that is already provided below.**")
+            memory_parts.append("**Use this information DIRECTLY to complete your task. All necessary data is included.**")
+            memory_parts.append("")
+            for phase_num, phase_data in previous_outputs.items():
+                outputs = phase_data.get("outputs", [])
+                if outputs:
+                    memory_parts.append(f"### Phase {phase_num} Results")
+                    for output in outputs:
+                        output_type = output.get('type', 'unknown')
+                        worker = output.get('worker', 'unknown')
+                        summary = output.get("summary", "")
+                        content = output.get("content")
+                        memory_parts.append(f"#### {output_type} (from {worker})")
+                        if summary:
+                            memory_parts.append(f"**Summary**: {summary}")
+                        # Include the actual content - this is the key data!
+                        if content:
+                            memory_parts.append("**Full Content:**")
+                            if isinstance(content, dict):
+                                content_str = json.dumps(content, ensure_ascii=False, indent=2)
+                            else:
+                                content_str = str(content)
+                            memory_parts.append(f"```json\n{content_str}\n```")
+                        memory_parts.append("")
+            parts.append("\n".join(memory_parts))
+
+        # 相关的检索内容
+        relevant_content = memory_context.get("relevant_content", [])
+        if relevant_content:
+            parts.append("## Relevant Context (from memory search)")
+            for item in relevant_content[:3]:  # 限制最多 3 条
+                content = item.get("content", {})
+                if isinstance(content, dict):
+                    content_str = json.dumps(content, ensure_ascii=False, indent=2)[:500]
+                else:
+                    content_str = str(content)[:500]
+                parts.append(f"```\n{content_str}\n```")
+
+        # 过滤掉 memory_context 后的上下文信息
+        filtered_context = {k: v for k, v in task.context.items() if k != "memory_context"}
+        if filtered_context:
+            parts.append(f"## Context\n```json\n{json.dumps(filtered_context, ensure_ascii=False, indent=2)}\n```")
 
         return "\n\n".join(parts)
 

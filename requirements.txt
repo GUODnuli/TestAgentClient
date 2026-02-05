@@ -13,6 +13,9 @@ chromadb==0.4.15
 faiss-cpu==1.13.2
 sentence-transformers==2.2.2
 
+# Memory System (BM25 retrieval)
+rank-bm25>=0.2.2
+
 # Configuration and Logging
 toml==0.10.2
 loguru==0.7.2

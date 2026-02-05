@@ -23,6 +23,16 @@ try:
 except ImportError:
     from worker import WorkerConfig, WorkerLoader, WorkerTask, WorkerResult, WorkerRunner, TaskStatus
 
+# 记忆系统导入
+try:
+    from ..memory import MemoryManager, ContentType
+except ImportError:
+    try:
+        from memory import MemoryManager, ContentType
+    except ImportError:
+        MemoryManager = None
+        ContentType = None
+
 if TYPE_CHECKING:
     from .task_planner import Phase
 
@@ -60,6 +70,10 @@ class CoordinatorConfig:
     # 模型配置
     planner_model: Optional[str] = None  # 用于任务规划的模型
 
+    # 记忆系统配置
+    memory_enabled: bool = True
+    memory_storage_path: str = "./storage/memory"
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -71,6 +85,8 @@ class CoordinatorConfig:
             "timeout": self.timeout,
             "max_parallel_workers": self.max_parallel_workers,
             "planner_model": self.planner_model,
+            "memory_enabled": self.memory_enabled,
+            "memory_storage_path": self.memory_storage_path,
         }
 
 
@@ -154,6 +170,14 @@ class Coordinator:
         self._message_queue: Optional[asyncio.Queue] = None
         self._message_consumer_task: Optional[asyncio.Task] = None
 
+        # 记忆系统
+        self._memory_manager: Optional["MemoryManager"] = None
+        if self.config.memory_enabled and MemoryManager is not None:
+            self._memory_manager = MemoryManager(
+                storage_path=self.config.memory_storage_path
+            )
+            logger.info("Memory system enabled, storage: %s", self.config.memory_storage_path)
+
     async def initialize(self) -> None:
         """
         初始化 Coordinator
@@ -206,6 +230,15 @@ class Coordinator:
         self._message_consumer_task = asyncio.create_task(
             self._consume_agent_messages()
         )
+
+        # 初始化协作记忆（用于 Phase 间共享结果，避免重复读取文件）
+        collaborative_memory = None
+        if self._memory_manager is not None:
+            collaborative_memory = self._memory_manager.get_collaborative_memory(
+                plan_id=self._state.task_id,
+                objective=objective
+            )
+            logger.info("Collaborative memory initialized for task: %s", self._state.task_id)
 
         self._emit_progress("task_started", {
             "task_id": self._state.task_id,
@@ -263,6 +296,15 @@ class Coordinator:
         finally:
             # 停止消息消费者
             await self._stop_message_consumer()
+
+            # 关闭协作记忆
+            if self._memory_manager is not None and self._state:
+                try:
+                    self._memory_manager.close_collaborative_memory(self._state.task_id)
+                    # 清理工作记忆
+                    self._memory_manager.cleanup_working_memories(self._state.task_id)
+                except Exception as e:
+                    logger.warning("Failed to close memory: %s", e)
 
     def cancel(self) -> None:
         """取消执行"""
@@ -525,6 +567,22 @@ class Coordinator:
         Returns:
             Phase 执行结果
         """
+        # 从协作记忆获取前序 Phase 的上下文（避免 Worker 重复读取文件）
+        memory_context = {}
+        if self._memory_manager is not None:
+            try:
+                collaborative_memory = self._memory_manager.get_collaborative_memory(
+                    plan_id=self._state.task_id
+                )
+                memory_context = collaborative_memory.get_context_for_phase(
+                    phase=phase.phase,
+                    query=self._state.objective
+                )
+                logger.debug("Retrieved memory context for phase %d: %d previous outputs",
+                            phase.phase, len(memory_context.get("previous_outputs", {})))
+            except Exception as e:
+                logger.warning("Failed to get memory context: %s", e)
+
         # 准备 Worker 任务
         tasks = []
         for assignment in phase.workers:
@@ -537,7 +595,7 @@ class Coordinator:
             # 解析输入变量
             resolved_input = self._resolve_variables(assignment.input, context)
 
-            # 创建任务
+            # 创建任务（包含记忆上下文）
             task = WorkerTask(
                 session_id=self._state.session_id,
                 worker_name=assignment.worker,
@@ -546,7 +604,9 @@ class Coordinator:
                 context={
                     **self._state.context,
                     "phase": phase.name,
+                    "phase_number": phase.phase,
                     "objective": self._state.objective,
+                    "memory_context": memory_context,  # 传递记忆上下文
                 },
             )
 
@@ -559,11 +619,37 @@ class Coordinator:
             worker_results = await self._execute_workers_sequential(tasks)
 
         # 构建 Phase 结果
-        return PhaseResult(
+        phase_result = PhaseResult(
             phase_name=phase.name,
             worker_results=worker_results,
             status=self._determine_phase_status(worker_results),
         )
+
+        # 发布 Phase 结果到协作记忆（供后续 Phase 使用，避免重复读取文件）
+        if self._memory_manager is not None and ContentType is not None:
+            try:
+                collaborative_memory = self._memory_manager.get_collaborative_memory(
+                    plan_id=self._state.task_id
+                )
+                for worker_name, worker_result in worker_results.items():
+                    if worker_result.is_success():
+                        # 发布成功的 Worker 输出到协作记忆
+                        collaborative_memory.publish_phase_output(
+                            phase=phase.phase,
+                            worker=worker_name,
+                            output_type=ContentType.TASK_RESULT,
+                            content={
+                                "output": worker_result.output,
+                                "reasoning": worker_result.reasoning,
+                                "iterations": worker_result.iterations,
+                            },
+                            tags=[phase.name, worker_name, "task_result"]
+                        )
+                logger.debug("Published phase %d results to collaborative memory", phase.phase)
+            except Exception as e:
+                logger.warning("Failed to publish phase results to memory: %s", e)
+
+        return phase_result
 
     async def _execute_workers_parallel(
         self,

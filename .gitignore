@@ -49,10 +49,11 @@ logs/
 *.sqlite3
 
 # Storage
-storage/tasks/*
-storage/cache/*
+storage/*
+!storage/.gitkeep
 !storage/tasks/.gitkeep
 !storage/cache/.gitkeep
+server/storage/
 storage/chat/*
 
 # Vector DB

@@ -245,6 +245,7 @@ def _push_coordinator_result_to_frontend(studio_url: str, reply_id: str, result:
 async def run_coordinator(args, toolkit: Toolkit, model, worker_model=None):
     """使用 Coordinator 分解任务并调度 Workers"""
     # 配置 Coordinator
+    memory_storage_path = str(project_root / "storage" / "memory")
     config = CoordinatorConfig(
         agents_dir=project_root / ".testagent" / "agents",
         skills_dir=project_root / ".testagent" / "skills",
@@ -253,6 +254,9 @@ async def run_coordinator(args, toolkit: Toolkit, model, worker_model=None):
         max_retries=3,
         timeout=1800,
         max_parallel_workers=5,
+        # 记忆系统配置
+        memory_enabled=True,
+        memory_storage_path=memory_storage_path,
     )
 
     # 创建进度回调

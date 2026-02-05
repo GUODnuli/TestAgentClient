@@ -64,5 +64,35 @@
       "batchSize": 50,
       "asyncUpdate": true
     }
+  },
+  "memory": {
+    "enabled": true,
+    "storagePath": "./storage/memory",
+    "layers": {
+      "working": {
+        "enabled": true
+      },
+      "collaborative": {
+        "enabled": true,
+        "autoPublish": true,
+        "maxPagesPerPlan": 1000
+      },
+      "global": {
+        "enabled": true,
+        "retentionDays": 90,
+        "maxEntries": 10000
+      }
+    },
+    "retrieval": {
+      "defaultTopK": 5,
+      "vectorWeight": 0.7,
+      "bm25Weight": 0.3,
+      "minScoreThreshold": 0.3
+    },
+    "embedding": {
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "dimension": 384,
+      "batchSize": 32
+    }
   }
 }
