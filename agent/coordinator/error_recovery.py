@@ -4,11 +4,13 @@
 
 处理 Worker 失败，决定恢复策略。
 """
+import asyncio
 import json
 import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
+from inspect import isasyncgen
 from typing import Any, Dict, List, Optional
 
 from agentscope.model import ChatModelBase
@@ -240,7 +242,7 @@ class ErrorRecovery:
         ]
 
         try:
-            response = self.model(messages)
+            response = await self._call_model(messages)
             return self._parse_recovery_action(response)
         except Exception as exc:
             logger.warning("LLM recovery decision failed: %s", exc)
@@ -350,6 +352,46 @@ Actions:
                 max_retries=1,
                 reason="Could not parse recovery decision",
             )
+
+    async def _call_model(self, messages: list) -> str:
+        """
+        调用模型并处理流式响应
+
+        Args:
+            messages: 消息列表
+
+        Returns:
+            模型响应文本
+        """
+        result = self.model(messages)
+
+        # 处理协程
+        if asyncio.iscoroutine(result):
+            result = await result
+
+        # 处理异步生成器（流式响应）
+        if isasyncgen(result):
+            collected = None
+            async for chunk in result:
+                collected = chunk
+            result = collected
+
+        # 提取文本内容
+        if result is not None:
+            if hasattr(result, 'get'):
+                content = result.get('content', '')
+                if isinstance(content, list) and len(content) > 0:
+                    for item in content:
+                        if isinstance(item, dict) and item.get('type') == 'text':
+                            return item.get('text', '')
+                    return str(content)
+                return content
+            if hasattr(result, 'text'):
+                return result.text
+            if hasattr(result, 'content'):
+                return result.content
+
+        return str(result) if result else ""
 
     def _system_prompt(self) -> str:
         """

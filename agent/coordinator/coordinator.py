@@ -115,17 +115,20 @@ class Coordinator:
         toolkit: Toolkit,
         config: Optional[CoordinatorConfig] = None,
         progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        worker_model: Optional[ChatModelBase] = None,
     ):
         """
         初始化 Coordinator
 
         Args:
-            model: LLM 模型实例
+            model: LLM 模型实例（用于任务规划、评估等）
             toolkit: 工具集
             config: Coordinator 配置
             progress_callback: 进度回调函数
+            worker_model: Worker 使用的模型（非流式，用于 ReActAgent）
         """
         self.model = model
+        self.worker_model = worker_model or model  # Worker 模型，优先使用非流式
         self.toolkit = toolkit
         self.config = config or CoordinatorConfig()
         self.progress_callback = progress_callback
@@ -146,6 +149,10 @@ class Coordinator:
 
         # 取消标志
         self._cancelled = False
+
+        # Agent 消息队列（用于收集所有 Worker 的中间输出）
+        self._message_queue: Optional[asyncio.Queue] = None
+        self._message_consumer_task: Optional[asyncio.Task] = None
 
     async def initialize(self) -> None:
         """
@@ -193,6 +200,12 @@ class Coordinator:
         )
 
         self._cancelled = False
+
+        # 初始化消息队列并启动消费者
+        self._message_queue = asyncio.Queue()
+        self._message_consumer_task = asyncio.create_task(
+            self._consume_agent_messages()
+        )
 
         self._emit_progress("task_started", {
             "task_id": self._state.task_id,
@@ -247,12 +260,135 @@ class Coordinator:
                 "status": "failed",
                 "error": str(exc),
             }
+        finally:
+            # 停止消息消费者
+            await self._stop_message_consumer()
 
     def cancel(self) -> None:
         """取消执行"""
         self._cancelled = True
         if self._phase_scheduler:
             self._phase_scheduler.cancel()
+
+    async def _consume_agent_messages(self) -> None:
+        """
+        消费 Agent 消息队列
+
+        从队列中读取消息并通过 progress_callback 转发到前端。
+        支持解析 AgentScope Msg 的不同内容块类型：
+        - text: 文本内容
+        - thinking: 思考过程
+        - tool_use: 工具调用
+        - tool_result: 工具执行结果
+        """
+        while True:
+            try:
+                # 使用超时避免永久阻塞
+                msg_data = await asyncio.wait_for(
+                    self._message_queue.get(),
+                    timeout=0.5
+                )
+
+                # 解析消息（AgentScope 格式: (msg, is_last, speech)）
+                if isinstance(msg_data, tuple) and len(msg_data) >= 2:
+                    msg, is_last = msg_data[0], msg_data[1]
+
+                    # 获取 worker 名称
+                    worker_name = getattr(msg, "name", "") or ""
+
+                    # 解析内容块
+                    content_blocks = []
+                    if hasattr(msg, "get_content_blocks"):
+                        # 使用 AgentScope 的方法获取所有内容块
+                        try:
+                            content_blocks = list(msg.content) if isinstance(msg.content, list) else []
+                        except Exception:
+                            content_blocks = []
+                    elif hasattr(msg, "content"):
+                        if isinstance(msg.content, list):
+                            content_blocks = msg.content
+                        elif isinstance(msg.content, str):
+                            content_blocks = [{"type": "text", "text": msg.content}]
+
+                    # 处理每个内容块
+                    for block in content_blocks:
+                        if not isinstance(block, dict):
+                            continue
+
+                        block_type = block.get("type", "")
+
+                        if block_type == "text":
+                            # 文本内容
+                            text_content = block.get("text", "")
+                            if text_content:
+                                self._emit_progress("worker_text", {
+                                    "task_id": self._state.task_id if self._state else "",
+                                    "worker": worker_name,
+                                    "content": text_content,
+                                    "is_last_chunk": is_last,
+                                })
+
+                        elif block_type == "thinking":
+                            # 思考过程
+                            thinking_content = block.get("thinking", "")
+                            if thinking_content:
+                                self._emit_progress("worker_thinking", {
+                                    "task_id": self._state.task_id if self._state else "",
+                                    "worker": worker_name,
+                                    "content": thinking_content,
+                                    "is_last_chunk": is_last,
+                                })
+
+                        elif block_type == "tool_use":
+                            # 工具调用
+                            self._emit_progress("worker_tool_call", {
+                                "task_id": self._state.task_id if self._state else "",
+                                "worker": worker_name,
+                                "id": block.get("id", ""),
+                                "name": block.get("name", ""),
+                                "input": block.get("input", {}),
+                            })
+
+                        elif block_type == "tool_result":
+                            # 工具执行结果
+                            output = block.get("output", "")
+                            # output 可能是列表或字符串
+                            if isinstance(output, list):
+                                output_str = "\n".join(
+                                    item.get("text", str(item)) if isinstance(item, dict) else str(item)
+                                    for item in output
+                                )
+                            else:
+                                output_str = str(output) if output else ""
+
+                            self._emit_progress("worker_tool_result", {
+                                "task_id": self._state.task_id if self._state else "",
+                                "worker": worker_name,
+                                "id": block.get("id", ""),
+                                "name": block.get("name", ""),
+                                "output": output_str,
+                                "success": True,  # AgentScope 默认成功，失败会有错误消息
+                            })
+
+            except asyncio.TimeoutError:
+                # 超时后检查是否应该停止
+                if self._cancelled or (self._state and self._state.status != "running"):
+                    break
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning("Error consuming agent message: %s", exc)
+
+    async def _stop_message_consumer(self) -> None:
+        """停止消息消费者"""
+        if self._message_consumer_task and not self._message_consumer_task.done():
+            self._message_consumer_task.cancel()
+            try:
+                await self._message_consumer_task
+            except asyncio.CancelledError:
+                pass
+        self._message_queue = None
+        self._message_consumer_task = None
 
     async def _plan_task(
         self,
@@ -445,9 +581,10 @@ class Coordinator:
         async def run_worker(config: WorkerConfig, task: WorkerTask) -> tuple[str, WorkerResult]:
             runner = WorkerRunner(
                 config=config,
-                model=self.model,
+                model=self.worker_model,  # 使用非流式模型用于 ReActAgent
                 toolkit=self.toolkit,
                 progress_callback=self.progress_callback,
+                message_queue=self._message_queue,  # 传递消息队列
             )
             result = await runner.run(task)
             return config.name, result
@@ -467,6 +604,7 @@ class Coordinator:
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 config, task = tasks[i]
+                logger.error("Worker %s raised exception: %s", config.name, result)
                 worker_results[config.name] = WorkerResult(
                     task_id=task.task_id,
                     worker_name=config.name,
@@ -476,6 +614,12 @@ class Coordinator:
             else:
                 name, worker_result = result
                 worker_results[name] = worker_result
+                if worker_result.status == TaskStatus.FAILED:
+                    logger.error(
+                        "Worker %s failed: %s",
+                        name,
+                        worker_result.error or "Unknown error"
+                    )
 
         return worker_results
 
@@ -500,13 +644,24 @@ class Coordinator:
 
             runner = WorkerRunner(
                 config=config,
-                model=self.model,
+                model=self.worker_model,  # 使用非流式模型用于 ReActAgent
                 toolkit=self.toolkit,
                 progress_callback=self.progress_callback,
+                message_queue=self._message_queue,  # 传递消息队列
             )
 
             result = await runner.run(task)
             worker_results[config.name] = result
+
+            # 记录执行结果
+            if result.status == TaskStatus.FAILED:
+                logger.error(
+                    "Worker %s failed: %s",
+                    config.name,
+                    result.error or "Unknown error"
+                )
+            else:
+                logger.info("Worker %s completed with status: %s", config.name, result.status)
 
             # 更新任务上下文，传递给后续 Worker
             task.context[f"{config.name}_result"] = result.output
@@ -560,9 +715,17 @@ class Coordinator:
         """
         for dep in phase.depends_on:
             if dep not in results:
+                logger.warning(
+                    "Phase '%s' dependency '%s' not found (was skipped or not executed)",
+                    phase.name, dep
+                )
                 return False
             dep_result = results[dep]
             if isinstance(dep_result, dict) and dep_result.get("status") == "failed":
+                logger.warning(
+                    "Phase '%s' dependency '%s' failed with status: %s",
+                    phase.name, dep, dep_result.get("status")
+                )
                 return False
         return True
 

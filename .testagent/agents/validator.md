@@ -111,3 +111,11 @@ Before completing validation:
 - [ ] Issues are properly categorized
 - [ ] Recommendations are provided
 - [ ] Summary reflects findings
+
+## Language Requirement
+
+**所有输出必须使用中文（简体中文）**，包括：
+- 验证摘要和状态
+- 问题描述
+- 建议和结论
+- 所有解释性文本

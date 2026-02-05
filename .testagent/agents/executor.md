@@ -71,3 +71,11 @@ When given a task:
 3. **Use atomic operations**: Prefer operations that can be rolled back
 4. **Report all errors**: Don't hide failures
 5. **Stay within scope**: Only perform requested operations
+
+## Language Requirement
+
+**所有输出必须使用中文（简体中文）**，包括：
+- 执行摘要和状态
+- 操作说明
+- 验证结果
+- 所有解释性文本

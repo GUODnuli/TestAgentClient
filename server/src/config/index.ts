@@ -15,7 +15,6 @@ const envSchema = z.object({
 
   AGENT_SCRIPT_PATH: z.string().default('../agent/coordinator_main.py'),
   PYTHON_PATH: z.string().default('python'),
-  AGENT_MODE: z.enum(['direct', 'coordinator']).default('direct'),
 
   LLM_PROVIDER: z.string().default('dashscope'),
   LLM_MODEL_NAME: z.string().default('qwen3-max-preview'),
@@ -61,7 +60,6 @@ function loadConfig() {
     agent: {
       scriptPath: env.AGENT_SCRIPT_PATH,
       pythonPath: env.PYTHON_PATH,
-      mode: env.AGENT_MODE,
     },
 
     llm: {

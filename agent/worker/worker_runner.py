@@ -14,12 +14,19 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
 from agentscope.agent import ReActAgent
+from agentscope.formatter import FormatterBase
 from agentscope.memory import InMemoryMemory
 from agentscope.message import Msg
 from agentscope.model import ChatModelBase
 from agentscope.tool import Toolkit
 
 from .worker_loader import WorkerConfig
+
+# 尝试导入 model 模块获取 formatter
+try:
+    from model import get_formatter
+except ImportError:
+    get_formatter = None
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +159,9 @@ class WorkerRunner:
         config: WorkerConfig,
         model: ChatModelBase,
         toolkit: Optional[Toolkit] = None,
+        formatter: Optional[FormatterBase] = None,
         progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        message_queue: Optional[asyncio.Queue] = None,
     ):
         """
         初始化 Worker 执行器
@@ -161,12 +170,15 @@ class WorkerRunner:
             config: Worker 配置
             model: LLM 模型实例
             toolkit: 工具集（可选，如果为 None 将创建空工具集）
+            formatter: 消息格式化器（可选，如果为 None 将尝试自动获取）
             progress_callback: 进度回调函数，签名为 (event_type, data)
         """
         self.config = config
         self.model = model
         self.toolkit = toolkit or Toolkit()
+        self.formatter = formatter
         self.progress_callback = progress_callback
+        self.message_queue = message_queue  # 用于收集 Agent 输出的消息队列
 
         # 运行状态
         self._cancelled = False
@@ -267,19 +279,44 @@ class WorkerRunner:
         # 构建提示词
         prompt = self._build_task_prompt(task, config)
 
+        # 获取 formatter（如果未提供，尝试自动获取）
+        formatter = self.formatter
+        if formatter is None and get_formatter is not None:
+            # 尝试从模型类型推断 provider
+            model_class = type(self.model).__name__.lower()
+            if 'dashscope' in model_class:
+                formatter = get_formatter('dashscope')
+            elif 'openai' in model_class:
+                formatter = get_formatter('openai')
+            elif 'anthropic' in model_class:
+                formatter = get_formatter('anthropic')
+            elif 'gemini' in model_class:
+                formatter = get_formatter('gemini')
+            elif 'ollama' in model_class:
+                formatter = get_formatter('ollama')
+            else:
+                # 默认使用 dashscope formatter
+                formatter = get_formatter('dashscope')
+
         # 创建 ReActAgent
         agent = ReActAgent(
             name=f"Worker_{config.name}",
             sys_prompt=config.system_prompt,
             model=self.model,
+            formatter=formatter,
             toolkit=self.toolkit,
             memory=InMemoryMemory(),
             max_iters=config.max_iterations,
         )
 
+        # 启用消息队列以捕获中间输出
+        if self.message_queue is not None:
+            agent.set_msg_queue_enabled(True, self.message_queue)
+
         # 执行任务（带超时）
         async def execute():
-            return await agent(Msg("user", prompt, "coordinator"))
+            # Msg 签名: Msg(name, content, role)
+            return await agent(Msg(name="user", content=prompt, role="user"))
 
         try:
             response = await asyncio.wait_for(
@@ -303,6 +340,10 @@ class WorkerRunner:
         except Exception as exc:
             result.status = TaskStatus.FAILED
             result.error = str(exc)
+            logger.error(
+                "Worker %s react execution failed: %s",
+                config.name, exc, exc_info=True
+            )
 
         return result
 
@@ -431,7 +472,7 @@ class WorkerRunner:
 
     async def _call_model(self, messages: List[Dict[str, str]]) -> str:
         """
-        调用模型
+        调用模型并处理流式响应
 
         Args:
             messages: 消息列表
@@ -439,11 +480,37 @@ class WorkerRunner:
         Returns:
             模型响应文本
         """
-        # 使用 AgentScope 模型的 __call__ 方法
-        response = self.model(messages)
-        if hasattr(response, "text"):
-            return response.text
-        return str(response)
+        from inspect import isasyncgen
+
+        result = self.model(messages)
+
+        # 处理协程
+        if asyncio.iscoroutine(result):
+            result = await result
+
+        # 处理异步生成器（流式响应）
+        if isasyncgen(result):
+            collected = None
+            async for chunk in result:
+                collected = chunk
+            result = collected
+
+        # 提取文本内容
+        if result is not None:
+            if hasattr(result, 'get'):
+                content = result.get('content', '')
+                if isinstance(content, list) and len(content) > 0:
+                    for item in content:
+                        if isinstance(item, dict) and item.get('type') == 'text':
+                            return item.get('text', '')
+                    return str(content)
+                return str(content) if content else ""
+            if hasattr(result, 'text'):
+                return result.text
+            if hasattr(result, 'content'):
+                return result.content
+
+        return str(result) if result else ""
 
     def _build_task_prompt(self, task: WorkerTask, config: WorkerConfig) -> str:
         """
@@ -500,6 +567,8 @@ class WorkerRunner:
         Returns:
             提取的输出内容
         """
+        if response is None:
+            return None
         if hasattr(response, "content"):
             return response.content
         if isinstance(response, dict):
@@ -516,7 +585,9 @@ class WorkerRunner:
         Returns:
             推理过程文本
         """
-        if hasattr(response, "metadata"):
+        if response is None:
+            return ""
+        if hasattr(response, "metadata") and response.metadata is not None:
             return response.metadata.get("reasoning", "")
         return ""
 

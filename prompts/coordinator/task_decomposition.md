@@ -177,3 +177,13 @@ Always output a valid JSON execution plan:
   "completion_criteria": "Implementation completed and validated"
 }
 ```
+
+## Language Requirement
+
+**IMPORTANT**: All descriptive text must be output in **Chinese (简体中文)**, including:
+- Phase names in the execution plan
+- Task descriptions for workers
+- Completion criteria
+- Any explanatory text
+
+The JSON structure keys remain in English, but all human-readable values should be in Chinese.

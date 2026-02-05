@@ -71,10 +71,28 @@ model Conversation {
   user     User      @relation(fields: [userId], references: [id])
   messages Message[]
   agentSessions AgentSession[]
+  coordinatorPlan CoordinatorPlan?
 
   @@index([userId])
   @@index([createdAt])
   @@map("conversations")
+}
+
+model CoordinatorPlan {
+  id              String   @id @default(uuid())
+  conversationId  String   @unique @map("conversation_id")
+  objective       String   @db.Text
+  plan            Json     // 完整的执行计划 (phases, workers, etc.)
+  activePhase     Int?     @map("active_phase")
+  completedPhases Int[]    @default([]) @map("completed_phases")
+  phaseOutputs    Json?    @map("phase_outputs")
+  status          String   @default("running") // running, completed, failed
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("coordinator_plans")
 }
 
 model Message {

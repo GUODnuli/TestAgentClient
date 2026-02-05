@@ -1,5 +1,3 @@
-export type AgentMode = 'direct' | 'coordinator';
-
 export interface SpawnAgentParams {
   conversationId: string;
   replyId: string;
@@ -13,7 +11,6 @@ export interface SpawnAgentParams {
   workspace?: string;
   clientKwargs?: Record<string, unknown>;
   generateKwargs?: Record<string, unknown>;
-  mode?: AgentMode;
 }
 
 export interface PendingReply {
@@ -49,6 +46,12 @@ export interface AgentTextEvent {
   sequence: number;
 }
 
+export interface AgentThinkingEvent {
+  type: 'thinking';
+  content: string;
+  sequence: number;
+}
+
 export interface AgentToolCallEvent {
   type: 'tool_call';
   id: string;
@@ -66,7 +69,14 @@ export interface AgentToolResultEvent {
   sequence: number;
 }
 
-export type AgentEvent = AgentTextEvent | AgentToolCallEvent | AgentToolResultEvent;
+export interface AgentCoordinatorEvent {
+  type: 'coordinator_event';
+  event_type: string;
+  data: Record<string, unknown>;
+  sequence: number;
+}
+
+export type AgentEvent = AgentTextEvent | AgentThinkingEvent | AgentToolCallEvent | AgentToolResultEvent | AgentCoordinatorEvent;
 
 /** Payload format from Python agent hook (new structured format) */
 export interface AgentEventsPayload {

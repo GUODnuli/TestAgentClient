@@ -256,6 +256,11 @@ export default {
   // 获取对话消息列表
   listMessages(conversationId, params) {
     return api.get(`/conversations/${conversationId}/messages`, { params })
+  },
+
+  // 获取对话的 Coordinator 计划
+  getConversationPlan(conversationId) {
+    return api.get(`/conversations/${conversationId}/plan`)
   }
 }
 

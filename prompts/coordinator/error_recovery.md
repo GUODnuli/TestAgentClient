@@ -217,3 +217,7 @@ Always respond with valid JSON:
 3. **Consider History**: Factor in previous attempts
 4. **Think Forward**: Consider impact on subsequent phases
 5. **Fail Fast**: Don't waste resources on unrecoverable situations
+
+## Language Requirement
+
+**IMPORTANT**: The `reason` field and any descriptive text must be in **Chinese (简体中文)**.

@@ -21,9 +21,6 @@ export function spawnAgentProcess(params: SpawnAgentParams): ChildProcess {
   const agentScript = path.resolve(config.agent.scriptPath);
   const pythonPath = config.agent.pythonPath;
 
-  // Determine agent mode: use params.mode if provided, otherwise fall back to config default
-  const agentMode = params.mode ?? config.agent.mode ?? 'direct';
-
   const args = [
     agentScript,
     '--query-from-stdin',
@@ -35,7 +32,6 @@ export function spawnAgentProcess(params: SpawnAgentParams): ChildProcess {
     '--apiKey', params.apiKey,
     '--writePermission', String(params.writePermission ?? false),
     '--workspace', params.workspace ?? path.resolve('.'),
-    '--mode', agentMode,
   ];
 
   if (params.clientKwargs) {

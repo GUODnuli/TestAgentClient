@@ -6,6 +6,7 @@ import { spawnAgentProcess } from './process-spawner.js';
 import { CacheKeys, CacheTTL } from '../cache/cache-keys.js';
 import type { SpawnAgentParams, PendingReply, AgentMessageData, AgentEvent } from './types.js';
 import { getToolDisplayName, isToolHidden } from './tool-display.js';
+import * as planService from '../modules/plan/plan.service.js';
 
 const AGENT_REPLY_TTL = CacheTTL.agentReply;
 
@@ -229,6 +230,12 @@ export class AgentManager {
         // Extract testcases from accumulated text
         const accumulatedText = reply.messages[0]?._accumulated_content ?? '';
         await this.extractAndPushTestcases(replyId, accumulatedText);
+      } else if (event.type === 'thinking') {
+        // Forward thinking content to SSE for display
+        this.pushToSSEQueue(replyId, {
+          type: 'thinking',
+          content: event.content,
+        } as unknown as AgentMessageData);
       } else if (event.type === 'tool_call') {
         // Skip hidden tools — do not push to frontend
         if (isToolHidden(event.name)) {
@@ -255,6 +262,16 @@ export class AgentManager {
           name: getToolDisplayName(event.name),
         };
         this.pushToSSEQueue(replyId, displayEvent as unknown as AgentMessageData);
+      } else if (event.type === 'coordinator_event') {
+        // Persist coordinator events to database
+        await this.handleCoordinatorEvent(replyId, event.event_type, event.data);
+
+        // Forward coordinator events to frontend for plan card rendering
+        this.pushToSSEQueue(replyId, {
+          type: 'coordinator_event',
+          event_type: event.event_type,
+          data: event.data,
+        } as unknown as AgentMessageData);
       }
     }
   }
@@ -460,6 +477,77 @@ export class AgentManager {
       for (const cb of callbacks) {
         cb(msg);
       }
+    }
+  }
+
+  /**
+   * Handle coordinator events and persist to database
+   */
+  private async handleCoordinatorEvent(
+    replyId: string,
+    eventType: string,
+    data: Record<string, unknown>
+  ): Promise<void> {
+    const reply = this.pendingReplies.get(replyId);
+    if (!reply) {
+      this.logger.warn({ replyId, eventType }, 'No pending reply for coordinator event');
+      return;
+    }
+
+    const { conversationId } = reply;
+
+    try {
+      switch (eventType) {
+        case 'plan_created': {
+          // 创建或更新计划
+          // Python 发送: { task_id, phases (count), plan (full plan dict) }
+          // plan.to_dict() 包含 objective, phases, completion_criteria 等
+          const planData = (data.plan as Record<string, unknown>) ?? {};
+          const objective = (planData.objective as string) ?? '';
+
+          await planService.upsertPlan(conversationId, {
+            objective,
+            plan: planData,
+            status: 'running',
+          });
+          break;
+        }
+
+        case 'phase_started': {
+          // 更新活跃 phase
+          // Python 发送: { task_id, phase (1-indexed), name, parallel, workers }
+          const phaseNumber = (data.phase as number) ?? 1;
+          await planService.updatePhaseStarted(conversationId, phaseNumber);
+          break;
+        }
+
+        case 'phase_completed': {
+          // 标记 phase 完成
+          // Python 发送: { task_id, phase (1-indexed), status, evaluation }
+          const phaseNumber = (data.phase as number) ?? 1;
+          const evaluation = data.evaluation as Record<string, unknown> | undefined;
+          await planService.updatePhaseCompleted(conversationId, phaseNumber, evaluation);
+          break;
+        }
+
+        case 'task_completed': {
+          // 计划执行完成
+          await planService.updatePlanStatus(conversationId, 'completed');
+          break;
+        }
+
+        case 'execution_failed':
+        case 'task_failed': {
+          // 计划执行失败
+          await planService.updatePlanStatus(conversationId, 'failed');
+          break;
+        }
+
+        default:
+          this.logger.debug({ eventType, conversationId }, 'Unhandled coordinator event type');
+      }
+    } catch (err) {
+      this.logger.error({ err, eventType, conversationId }, 'Failed to handle coordinator event');
     }
   }
 

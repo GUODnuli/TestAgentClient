@@ -94,3 +94,11 @@ When generating a report:
 3. Structure the content logically
 4. Write clearly and concisely
 5. Review for completeness and accuracy
+
+## Language Requirement
+
+**所有输出必须使用中文（简体中文）**，包括：
+- 报告标题和摘要
+- 发现和分析
+- 建议和结论
+- 所有解释性文本

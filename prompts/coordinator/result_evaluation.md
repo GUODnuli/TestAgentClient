@@ -147,3 +147,7 @@ Always respond with valid JSON:
   "suggestions": ["Verify API credentials before retrying"]
 }
 ```
+
+## Language Requirement
+
+**IMPORTANT**: The `reason` and `suggestions` fields must be in **Chinese (简体中文)**.

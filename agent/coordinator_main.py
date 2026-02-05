@@ -2,11 +2,7 @@
 """
 Coordinator Agent 入口文件
 
-支持两种模式：
-1. 直接模式 (direct): 使用单个 ReActAgent 处理请求（现有行为）
-2. 协调模式 (coordinator): 使用 Coordinator 分解任务并调度多个 Worker
-
-通过命令行参数 --mode 切换，默认为 direct 模式保持向后兼容。
+使用 Coordinator 模式分解任务并调度多个 Worker 执行。
 """
 import asyncio
 import io
@@ -46,10 +42,6 @@ if str(agent_dir) not in sys.path:
     sys.path.insert(0, str(agent_dir))
 
 import json5
-from agentscope.agent import ReActAgent
-from agentscope.memory import InMemoryMemory
-from agentscope.message import Msg
-from agentscope.plan import PlanNotebook
 from agentscope.tool import Toolkit
 
 # Base tools
@@ -67,38 +59,99 @@ from tool.utils import list_uploaded_files
 from tool_registry import setup_toolkit
 from mcp_loader import close_mcp_servers
 from args import get_args
-from model import get_model, get_formatter
-from hook import AgentHooks, studio_pre_print_hook, studio_post_reply_hook
+from model import get_model, get_model_non_streaming
+from hook import AgentHooks
 
 # Coordinator imports
 from coordinator import Coordinator, CoordinatorConfig
-
-
-def _load_system_prompt() -> str:
-    """加载基础系统提示词"""
-    prompts_dir = project_root / "prompts"
-    base_path = prompts_dir / "system_prompt.md"
-    if base_path.exists():
-        return base_path.read_text(encoding="utf-8")
-    return "You are a TestAgent assistant."
 
 
 def _create_progress_callback(studio_url: str, reply_id: str):
     """创建 Coordinator 进度回调函数"""
     import httpx
 
+    # 用于追踪序列号
+    sequence_counter = {"value": 0}
+
     def callback(event_type: str, data: dict):
         """将 Coordinator 事件推送到前端"""
         if not studio_url or not reply_id:
             return
 
-        # 转换为前端可理解的事件格式
-        events = [{
-            "type": "coordinator_event",
-            "event_type": event_type,
-            "data": data,
-            "sequence": 0,
-        }]
+        sequence_counter["value"] += 1
+        events = []
+
+        # 根据事件类型决定如何推送
+        if event_type == "worker_text":
+            # Worker 文本输出
+            content = data.get("content", "")
+            if content:
+                events.append({
+                    "type": "text",
+                    "content": content,
+                    "sequence": sequence_counter["value"],
+                })
+
+        elif event_type == "worker_thinking":
+            # Worker 思考过程
+            content = data.get("content", "")
+            if content:
+                events.append({
+                    "type": "thinking",
+                    "content": content,
+                    "sequence": sequence_counter["value"],
+                })
+
+        elif event_type == "worker_tool_call":
+            # Worker 工具调用 - 复用前端 ToolCallCard
+            events.append({
+                "type": "tool_call",
+                "id": data.get("id", ""),
+                "name": data.get("name", ""),
+                "input": data.get("input", {}),
+                "sequence": sequence_counter["value"],
+            })
+
+        elif event_type == "worker_tool_result":
+            # Worker 工具执行结果 - 复用前端 ToolCallCard
+            events.append({
+                "type": "tool_result",
+                "id": data.get("id", ""),
+                "name": data.get("name", ""),
+                "output": data.get("output", ""),
+                "success": data.get("success", True),
+                "sequence": sequence_counter["value"],
+            })
+
+        elif event_type in ("phase_started", "phase_completed"):
+            # Phase 状态变化作为 coordinator_event（用于更新侧边栏）
+            events.append({
+                "type": "coordinator_event",
+                "event_type": event_type,
+                "data": data,
+                "sequence": sequence_counter["value"],
+            })
+
+        elif event_type == "plan_created":
+            # 执行计划创建 - 用于显示侧边栏
+            events.append({
+                "type": "coordinator_event",
+                "event_type": event_type,
+                "data": data,
+                "sequence": sequence_counter["value"],
+            })
+
+        else:
+            # 其他事件作为 coordinator_event
+            events.append({
+                "type": "coordinator_event",
+                "event_type": event_type,
+                "data": data,
+                "sequence": sequence_counter["value"],
+            })
+
+        if not events:
+            return
 
         payload = {
             "replyId": reply_id,
@@ -189,59 +242,8 @@ def _push_coordinator_result_to_frontend(studio_url: str, reply_id: str, result:
         print(f"[Hook Warning] Failed to push finished signal: {e}")
 
 
-async def run_direct_mode(args, toolkit: Toolkit, model, formatter):
-    """直接模式：使用单个 ReActAgent"""
-    # 注册类级 Hook
-    ReActAgent.register_class_hook(
-        "pre_print",
-        "studio_pre_print_hook",
-        studio_pre_print_hook
-    )
-    ReActAgent.register_class_hook(
-        "post_reply",
-        "studio_post_reply_hook",
-        studio_post_reply_hook
-    )
-
-    # 加载系统提示词
-    system_prompt = _load_system_prompt()
-    system_prompt += f"\n\n# 当前时间\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-
-    # 加载自定义 plan to hint
-    from plan.plan_to_hint import CustomPlanToHint
-    plan_to_hint = CustomPlanToHint()
-
-    # 创建 ReActAgent
-    agent = ReActAgent(
-        name="ChatAgent",
-        sys_prompt=system_prompt,
-        model=model,
-        formatter=formatter,
-        toolkit=toolkit,
-        memory=InMemoryMemory(),
-        max_iters=50,
-        plan_notebook=PlanNotebook(max_subtasks=50, plan_to_hint=plan_to_hint),
-        enable_meta_tool=True
-    )
-
-    print("[OK] Agent 初始化完成 (Direct Mode)")
-
-    # 解析用户查询
-    if args.query_from_stdin:
-        query_str = sys.stdin.readline().strip()
-        print(f"[INFO] 从 stdin 读取到: {query_str[:100]}...")
-        query = json5.loads(query_str)
-    else:
-        query = json5.loads(args.query)
-
-    print(f"[INFO] 用户查询: {str(query)[:100]}...")
-
-    # 执行 Agent
-    await agent(Msg("user", query, "user"))
-
-
-async def run_coordinator_mode(args, toolkit: Toolkit, model):
-    """协调模式：使用 Coordinator 分解任务并调度 Workers"""
+async def run_coordinator(args, toolkit: Toolkit, model, worker_model=None):
+    """使用 Coordinator 分解任务并调度 Workers"""
     # 配置 Coordinator
     config = CoordinatorConfig(
         agents_dir=project_root / ".testagent" / "agents",
@@ -262,12 +264,13 @@ async def run_coordinator_mode(args, toolkit: Toolkit, model):
         toolkit=toolkit,
         config=config,
         progress_callback=progress_callback,
+        worker_model=worker_model,  # 非流式模型用于 Worker
     )
 
     # 初始化（加载 Workers 和 Skills）
     await coordinator.initialize()
 
-    print("[OK] Coordinator 初始化完成 (Coordinator Mode)")
+    print("[OK] Coordinator 初始化完成")
 
     # 解析用户查询
     if args.query_from_stdin:
@@ -324,11 +327,8 @@ async def main():
     """主入口函数"""
     args = get_args()
 
-    # 检查模式参数（默认 direct）
-    mode = getattr(args, 'mode', 'direct') or 'direct'
-
     print("=" * 60)
-    print(f"ChatAgent 启动 (Mode: {mode})")
+    print("ChatAgent 启动 (Coordinator Mode)")
     print(f"会话 ID: {args.conversation_id}")
     print(f"回复 ID: {args.reply_id}")
     print(f"Server URL: {args.studio_url}")
@@ -376,6 +376,7 @@ async def main():
     toolkit, mcp_clients = await setup_toolkit(toolkit, settings_path=settings_path)
 
     # 获取模型
+    # 流式模型用于 Coordinator 的直接 LLM 调用（任务规划、评估等）
     model = get_model(
         args.llmProvider,
         args.modelName,
@@ -384,15 +385,20 @@ async def main():
         args.generateKwargs
     )
 
+    # 非流式模型用于 Worker（ReActAgent 需要非流式响应）
+    worker_model = get_model_non_streaming(
+        args.llmProvider,
+        args.modelName,
+        args.apiKey,
+        args.clientKwargs,
+        args.generateKwargs
+    )
+
     try:
-        if mode == "coordinator":
-            await run_coordinator_mode(args, toolkit, model)
-        else:
-            formatter = get_formatter(args.llmProvider)
-            await run_direct_mode(args, toolkit, model, formatter)
+        await run_coordinator(args, toolkit, model, worker_model)
 
     except Exception as e:
-        print(f"[ERROR] Agent 执行失败: {e}")
+        print(f"[ERROR] Coordinator 执行失败: {e}")
         import traceback
         traceback.print_exc()
     finally:

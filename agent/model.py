@@ -150,3 +150,82 @@ def get_model(
         )
     else:
         raise ValueError(f"不支持的 LLM 提供商: {llm_provider}")
+
+
+def get_model_non_streaming(
+    llm_provider: str,
+    model_name: str,
+    api_key: str,
+    client_kwargs: dict = None,
+    generate_kwargs: dict = None,
+) -> ChatModelBase:
+    """
+    获取非流式 LLM 模型实例（用于 ReActAgent 等需要同步响应的场景）
+
+    Args:
+        llm_provider: LLM 提供商名称
+        model_name: 模型名称
+        api_key: API Key
+        client_kwargs: 客户端额外参数
+        generate_kwargs: 生成额外参数
+
+    Returns:
+        非流式 LLM 模型实例
+    """
+    client_kwargs = client_kwargs or {}
+    generate_kwargs = generate_kwargs or {}
+    provider = llm_provider.lower()
+
+    if provider == "dashscope":
+        if 'timeout' not in client_kwargs:
+            client_kwargs['timeout'] = {"connect": 10, "read": 120, "write": 10}
+        if 'max_retries' not in client_kwargs:
+            client_kwargs['max_retries'] = 0
+
+        return DashScopeChatModel(
+            model_name=model_name,
+            api_key=api_key,
+            stream=False,  # 非流式
+            client_kwargs=client_kwargs,
+            generate_kwargs=generate_kwargs,
+        )
+    elif provider == "openai":
+        return OpenAIChatModel(
+            model_name=model_name,
+            api_key=api_key,
+            stream=False,  # 非流式
+            client_kwargs=client_kwargs,
+            generate_kwargs=generate_kwargs,
+        )
+    elif provider == "ollama":
+        if is_agentscope_version_ge((1, 0, 9)):
+            return OllamaChatModel(
+                model_name=model_name,
+                stream=False,  # 非流式
+                client_kwargs=client_kwargs,
+                generate_kwargs=generate_kwargs,
+            )
+        else:
+            return OllamaChatModel(
+                model_name=model_name,
+                stream=False,  # 非流式
+                **client_kwargs,
+            )
+    elif provider == "gemini":
+        return GeminiChatModel(
+            model_name=model_name,
+            api_key=api_key,
+            stream=False,  # 非流式
+            client_kwargs=client_kwargs,
+            generate_kwargs=generate_kwargs,
+        )
+    elif provider == "anthropic":
+        return AnthropicChatModel(
+            model_name=model_name,
+            api_key=api_key,
+            stream=False,  # 非流式
+            client_kwargs=client_kwargs,
+            generate_kwargs=generate_kwargs,
+        )
+    else:
+        raise ValueError(f"不支持的 LLM 提供商: {llm_provider}")

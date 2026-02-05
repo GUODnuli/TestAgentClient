@@ -155,6 +155,14 @@
 
           <!-- 计划步骤展示组件 -->
           <PlanStepBar :planData="currentPlanData" />
+          
+          <!-- Coordinator 执行计划卡片 (浮动在右侧，不挤压主内容) -->
+          <CoordinatorPlanCard
+            :plan="coordinatorPlan"
+            :activePhase="activeCoordinatorPhase"
+            :completedPhases="completedCoordinatorPhases"
+            :phaseOutputs="coordinatorPhaseOutputs"
+          />
 
           <div class="bottom-input-wrapper">
             <div class="bottom-input-container">
@@ -231,6 +239,7 @@ import api from '@/api'
 import { useChatStore } from '@/stores/chat'
 import MarkdownViewer from '@/components/MarkdownViewer.vue'
 import PlanStepBar from '@/components/PlanStepBar.vue'
+import CoordinatorPlanCard from '@/components/CoordinatorPlanCard.vue'
 import ToolCallCard from '@/components/ToolCallCard.vue'
 import { SSEParser } from '@/utils/sse-parser.js'
 
@@ -257,23 +266,49 @@ const messagesContainer = ref(null)
 
 const currentPlanData = ref(null)
 
+// Coordinator 计划相关状态
+const coordinatorPlan = ref(null)
+const activeCoordinatorPhase = ref(null)
+const completedCoordinatorPhases = ref([])
+const coordinatorPhaseOutputs = ref({})
+
 const hasMessages = computed(() => messages.value.length > 0)
 
 // 标志位，防止发送消息时触发的 ID 变化导致重复加载
 const isSending = ref(false)
 
-// 监听当前对话变化，加载消息
+// 监听当前对话变化，加载消息和计划
 watch(currentConversationId, async (newId) => {
   if (isSending.value) return // 如果正在发送中，不触发自动加载，避免覆盖本地正在生成的流
 
+  // 重置 Coordinator 状态
+  coordinatorPlan.value = null
+  activeCoordinatorPhase.value = null
+  completedCoordinatorPhases.value = []
+  coordinatorPhaseOutputs.value = {}
+
   if (newId) {
     try {
-      const data = await api.listMessages(newId, { limit: 1000 })
-      messages.value = data.map(msg => ({
+      // 并行加载消息和计划
+      const [messagesData, planData] = await Promise.all([
+        api.listMessages(newId, { limit: 1000 }),
+        api.getConversationPlan(newId).catch(() => null) // 计划可能不存在
+      ])
+
+      // 加载消息
+      messages.value = messagesData.map(msg => ({
         role: msg.role,
         content: msg.content
       }))
-      
+
+      // 加载计划（如果存在）
+      if (planData) {
+        coordinatorPlan.value = planData.plan
+        activeCoordinatorPhase.value = planData.activePhase
+        completedCoordinatorPhases.value = planData.completedPhases || []
+        coordinatorPhaseOutputs.value = planData.phaseOutputs || {}
+      }
+
       await nextTick()
       scrollToBottom()
     } catch (error) {
@@ -309,6 +344,56 @@ const mergeAdjacentTextEvents = (events) => {
   }
 }
 
+/**
+ * Handle Coordinator events to update plan card UI
+ */
+const handleCoordinatorEvent = (eventType, data) => {
+  if (!eventType || !data) return
+
+  switch (eventType) {
+    case 'plan_created':
+      // 初始化计划数据
+      coordinatorPlan.value = data.plan || null
+      activeCoordinatorPhase.value = null
+      completedCoordinatorPhases.value = []
+      coordinatorPhaseOutputs.value = {}
+      break
+
+    case 'phase_started':
+      // 标记当前活动 phase
+      if (data.phase) {
+        activeCoordinatorPhase.value = data.phase
+      }
+      break
+
+    case 'phase_completed':
+      // 标记 phase 完成
+      if (data.phase) {
+        completedCoordinatorPhases.value.push(data.phase)
+        // 保存 phase 输出
+        if (data.output) {
+          coordinatorPhaseOutputs.value[data.phase] = data.output
+        }
+        // 如果完成的 phase 是当前活动的，清除活动状态
+        if (activeCoordinatorPhase.value === data.phase) {
+          activeCoordinatorPhase.value = null
+        }
+      }
+      break
+
+    case 'coordinator_initialized':
+      // Coordinator 初始化，重置状态
+      coordinatorPlan.value = null
+      activeCoordinatorPhase.value = null
+      completedCoordinatorPhases.value = []
+      coordinatorPhaseOutputs.value = {}
+      break
+
+    default:
+      break
+  }
+}
+
 // 发送消息
 const sendMessage = async () => {
   if ((!inputMessage.value.trim() && !selectedFile.value) || loading.value) return
@@ -317,6 +402,12 @@ const sendMessage = async () => {
   let userMessage = inputMessage.value.trim()
   const hasFile = !!selectedFile.value
   const currentFile = selectedFile.value
+
+  // 重置 Coordinator 状态
+  coordinatorPlan.value = null
+  activeCoordinatorPhase.value = null
+  completedCoordinatorPhases.value = []
+  coordinatorPhaseOutputs.value = {}
 
   inputMessage.value = ''
   selectedFile.value = null
@@ -442,6 +533,9 @@ const sendMessage = async () => {
           })
         } else if (parsed.type === 'title_generated') {
           chatStore.updateConversationTitle(parsed.conversation_id, parsed.title)
+        } else if (parsed.type === 'coordinator_event' && parsed.data) {
+          // 处理 Coordinator 事件
+          handleCoordinatorEvent(parsed.event_type, parsed.data)
         } else if (parsed.type === 'error') {
           throw new Error(parsed.message || '流式输出错误')
         }
@@ -994,4 +1088,11 @@ onMounted(() => {
 .stop-btn:active {
   transform: scale(0.95);
 }
+
+/* ==================== Coordinator 侧边栏布局适配 ==================== */
+/* 
+ * 注意：侧边栏使用 fixed 定位浮动在右侧，不挤压主内容区
+ * 主内容区(chat-messages)保持原有宽度和位置不变
+ * 用户可以通过收起侧边栏来查看右侧内容
+ */
 </style>

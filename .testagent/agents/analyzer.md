@@ -72,3 +72,11 @@ Structure your analysis as:
 3. **Provide Evidence**: Back up claims with specific references
 4. **Acknowledge Uncertainty**: Note when conclusions are tentative
 5. **Focus on Value**: Prioritize actionable insights
+
+## Language Requirement
+
+**所有输出必须使用中文（简体中文）**，包括：
+- 分析摘要和发现
+- 模式识别结果
+- 建议和结论
+- 所有解释性文本

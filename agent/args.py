@@ -93,12 +93,6 @@ def get_args() -> Namespace:
         default={},
         help="LLM 生成额外参数（JSON 字符串）"
     )
-    parser.add_argument(
-        "--mode",
-        choices=["direct", "coordinator"],
-        default="direct",
-        help="Agent 执行模式：direct（单 Agent）或 coordinator（多 Worker 协调）"
-    )
 
     args = parser.parse_args()
     return args

@@ -1,0 +1,341 @@
+/**
+ * 选框组件默认样式
+ * 可根据需要引入或自定义
+ */
+
+/* ==================== 基础容器 ==================== */
+.select-box {
+  background: var(--bg-primary, #ffffff);
+  border: 1px solid var(--border-color, #e5e5e5);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 16px 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* ==================== 头部 ==================== */
+.select-box-header {
+  margin-bottom: 12px;
+}
+
+.select-box-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary, #1a1a1a);
+  margin-bottom: 4px;
+}
+
+.select-box-description {
+  font-size: 13px;
+  color: var(--text-secondary, #666666);
+  line-height: 1.5;
+}
+
+/* ==================== 选项列表 ==================== */
+.options-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ==================== 单个选项 ==================== */
+.select-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 1px solid transparent;
+}
+
+.select-option:hover {
+  background: var(--bg-hover, #f5f5f5);
+}
+
+.select-option.selected {
+  background: rgba(97, 92, 237, 0.06);
+  border-color: rgba(97, 92, 237, 0.2);
+}
+
+.select-option.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ==================== 复选框（多选） ==================== */
+.option-checkbox {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border-color, #d9d9d9);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+  transition: all 0.2s ease;
+}
+
+.select-option.selected .option-checkbox {
+  background: var(--send-btn, #615ced);
+  border-color: var(--send-btn, #615ced);
+}
+
+.check-mark {
+  color: white;
+  font-size: 12px;
+  display: none;
+  font-weight: bold;
+}
+
+.select-option.selected .check-mark {
+  display: block;
+}
+
+/* ==================== 单选框（确认选框） ==================== */
+.option-radio {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border-color, #d9d9d9);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+  transition: all 0.2s ease;
+}
+
+.select-option.selected .option-radio {
+  border-color: var(--send-btn, #615ced);
+}
+
+.radio-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--send-btn, #615ced);
+  border-radius: 50%;
+  display: none;
+}
+
+.select-option.selected .radio-dot {
+  display: block;
+}
+
+/* ==================== 选项内容 ==================== */
+.option-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.option-label-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.option-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary, #1a1a1a);
+}
+
+.option-description {
+  font-size: 12px;
+  color: var(--text-secondary, #666666);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* ==================== 自动执行标识 ==================== */
+.auto-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--send-btn, #615ced);
+  background: rgba(97, 92, 237, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* ==================== 自定义输入区域 ==================== */
+.custom-option {
+  border-top: 1px dashed var(--border-color, #e5e5e5);
+  margin-top: 4px;
+  padding-top: 16px;
+}
+
+.custom-input-area {
+  flex: 1;
+}
+
+.custom-label {
+  font-size: 13px;
+  color: var(--text-secondary, #666666);
+  margin-bottom: 4px;
+}
+
+.custom-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color, #d9d9d9);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--bg-primary, #ffffff);
+  color: var(--text-primary, #1a1a1a);
+  box-sizing: border-box;
+  transition: border-color 0.2s;
+}
+
+.custom-input:focus {
+  outline: none;
+  border-color: var(--send-btn, #615ced);
+}
+
+.custom-input::placeholder {
+  color: var(--text-placeholder, #999999);
+}
+
+/* ==================== 确认选框特殊样式 ==================== */
+.confirm-select-box .select-option {
+  padding: 14px 12px;
+}
+
+.confirm-select-box .option-label {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.confirm-select-box .option-description {
+  font-size: 12px;
+  color: var(--text-secondary, #666666);
+  margin-top: 2px;
+}
+
+/* ==================== 暗黑模式 ==================== */
+@media (prefers-color-scheme: dark) {
+  .select-box {
+    background: #2a2a2a;
+    border-color: #3a3a3a;
+  }
+  
+  .select-box-title {
+    color: #e0e0e0;
+  }
+  
+  .select-box-description,
+  .option-description,
+  .custom-label {
+    color: #999999;
+  }
+  
+  .select-option:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+  
+  .select-option.selected {
+    background: rgba(97, 92, 237, 0.1);
+  }
+  
+  .option-label {
+    color: #e0e0e0;
+  }
+  
+  .option-checkbox,
+  .option-radio {
+    border-color: #555555;
+  }
+  
+  .custom-input {
+    background: #232326;
+    border-color: #3a3a3a;
+    color: #e0e0e0;
+  }
+  
+  .custom-input::placeholder {
+    color: #666666;
+  }
+  
+  .custom-option {
+    border-top-color: #3a3a3a;
+  }
+}
+
+/* 手动暗黑模式类 */
+.dark .select-box {
+  background: #2a2a2a;
+  border-color: #3a3a3a;
+}
+
+.dark .select-box-title {
+  color: #e0e0e0;
+}
+
+.dark .select-box-description,
+.dark .option-description,
+.dark .custom-label {
+  color: #999999;
+}
+
+.dark .select-option:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.dark .select-option.selected {
+  background: rgba(97, 92, 237, 0.1);
+}
+
+.dark .option-label {
+  color: #e0e0e0;
+}
+
+.dark .option-checkbox,
+.dark .option-radio {
+  border-color: #555555;
+}
+
+.dark .custom-input {
+  background: #232326;
+  border-color: #3a3a3a;
+  color: #e0e0e0;
+}
+
+.dark .custom-option {
+  border-top-color: #3a3a3a;
+}
+
+/* ==================== 动画 ==================== */
+@keyframes select-pop {
+  0% {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.select-box {
+  animation: select-pop 0.2s ease-out;
+}
+
+/* ==================== 响应式 ==================== */
+@media (max-width: 480px) {
+  .select-box {
+    padding: 12px;
+    margin: 12px 0;
+  }
+  
+  .select-option {
+    padding: 10px;
+  }
+  
+  .option-label {
+    font-size: 14px;
+  }
+}

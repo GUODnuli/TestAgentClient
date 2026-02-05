@@ -4,11 +4,13 @@
 
 使用 LLM 将用户请求分解为可执行的 Worker 任务序列。
 """
+import asyncio
 import json
 import logging
 import re
 import uuid
 from dataclasses import dataclass, field
+from inspect import isasyncgen
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -175,7 +177,8 @@ class TaskPlanner:
             {"role": "user", "content": prompt},
         ]
 
-        response = self.model(messages)
+        # 调用模型并处理流式响应
+        response = await self._call_model(messages)
 
         # 解析响应
         plan_dict = self._parse_response(response)
@@ -402,6 +405,50 @@ Guidelines:
             if phase_key not in visited:
                 if has_cycle(phase_key):
                     raise ValueError(f"Circular dependency detected in plan")
+
+    async def _call_model(self, messages: List[Dict[str, str]]) -> Any:
+        """
+        调用模型并处理流式响应
+
+        Args:
+            messages: 消息列表
+
+        Returns:
+            模型响应（已提取文本内容）
+        """
+        result = self.model(messages)
+
+        # 处理协程
+        if asyncio.iscoroutine(result):
+            result = await result
+
+        # 处理异步生成器（流式响应）
+        if isasyncgen(result):
+            collected = None
+            async for chunk in result:
+                collected = chunk
+            result = collected
+
+        # 提取文本内容
+        if result is not None:
+            # 如果是 dict-like 对象，提取 content
+            if hasattr(result, 'get'):
+                content = result.get('content', '')
+                if isinstance(content, list) and len(content) > 0:
+                    # 内容是列表格式，提取第一个文本项
+                    for item in content:
+                        if isinstance(item, dict) and item.get('type') == 'text':
+                            return item.get('text', '')
+                    return str(content)
+                return content
+            # 如果有 text 属性
+            if hasattr(result, 'text'):
+                return result.text
+            # 如果有 content 属性
+            if hasattr(result, 'content'):
+                return result.content
+
+        return result
 
     def _load_prompt(self, filename: str) -> str:
         """

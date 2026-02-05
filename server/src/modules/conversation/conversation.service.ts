@@ -4,6 +4,7 @@ import { getLogger } from '../../config/logger.js';
 import { NotFoundError, ForbiddenError } from '../../common/errors.js';
 import { formatConversation, formatMessage } from '../../common/utils.js';
 import { CacheKeys, CacheTTL } from '../../cache/cache-keys.js';
+import * as planService from '../plan/plan.service.js';
 
 const CACHE_CONVERSATIONS_TTL = CacheTTL.conversations;
 const CACHE_MESSAGES_TTL = CacheTTL.messages;
@@ -294,4 +295,25 @@ export async function createConversationInternal(userId: string, title: string) 
   await invalidateConversationsCache(userId);
 
   return conversation;
+}
+
+/**
+ * Get the coordinator plan for a conversation
+ */
+export async function getConversationPlan(conversationId: string, userId: string) {
+  const prisma = getPrisma();
+
+  // Verify access
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+  });
+
+  if (!conversation) {
+    throw new NotFoundError('对话');
+  }
+  if (conversation.userId !== userId) {
+    throw new ForbiddenError('无权访问此对话的计划');
+  }
+
+  return planService.getPlan(conversationId);
 }
