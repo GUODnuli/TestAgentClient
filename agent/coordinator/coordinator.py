@@ -25,13 +25,13 @@ except ImportError:
 
 # 记忆系统导入
 try:
-    from ..memory import MemoryManager, ContentType
+    from ..memory import MemoryManager, PreconstructedMemory
 except ImportError:
     try:
-        from memory import MemoryManager, ContentType
+        from memory import MemoryManager, PreconstructedMemory
     except ImportError:
         MemoryManager = None
-        ContentType = None
+        PreconstructedMemory = None
 
 if TYPE_CHECKING:
     from .task_planner import Phase
@@ -74,6 +74,12 @@ class CoordinatorConfig:
     memory_enabled: bool = True
     memory_storage_path: str = "./storage/memory"
 
+    # GAM 配置
+    gam_enabled: bool = True
+    gam_model: Optional[str] = None  # 默认使用 coordinator 模型
+    gam_max_iterations: int = 3
+    gam_min_confidence: float = 0.7
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -87,6 +93,10 @@ class CoordinatorConfig:
             "planner_model": self.planner_model,
             "memory_enabled": self.memory_enabled,
             "memory_storage_path": self.memory_storage_path,
+            "gam_enabled": self.gam_enabled,
+            "gam_model": self.gam_model,
+            "gam_max_iterations": self.gam_max_iterations,
+            "gam_min_confidence": self.gam_min_confidence,
         }
 
 
@@ -173,10 +183,27 @@ class Coordinator:
         # 记忆系统
         self._memory_manager: Optional["MemoryManager"] = None
         if self.config.memory_enabled and MemoryManager is not None:
+            # 初始化带有模型的 MemoryManager（用于 GAM）
+            gam_config = {
+                "gam": {
+                    "enabled": self.config.gam_enabled,
+                    "max_iterations": self.config.gam_max_iterations,
+                    "min_confidence": self.config.gam_min_confidence,
+                }
+            }
             self._memory_manager = MemoryManager(
-                storage_path=self.config.memory_storage_path
+                storage_path=self.config.memory_storage_path,
+                config=gam_config,
+                model=model if self.config.gam_enabled else None
             )
-            logger.info("Memory system enabled, storage: %s", self.config.memory_storage_path)
+            logger.info(
+                "Memory system enabled (GAM=%s), storage: %s",
+                self.config.gam_enabled,
+                self.config.memory_storage_path
+            )
+
+        # GAM 消息收集（用于 GAMMemorizer）
+        self._phase_messages: Dict[str, List[Dict[str, Any]]] = {}
 
     async def initialize(self) -> None:
         """
@@ -230,15 +257,6 @@ class Coordinator:
         self._message_consumer_task = asyncio.create_task(
             self._consume_agent_messages()
         )
-
-        # 初始化协作记忆（用于 Phase 间共享结果，避免重复读取文件）
-        collaborative_memory = None
-        if self._memory_manager is not None:
-            collaborative_memory = self._memory_manager.get_collaborative_memory(
-                plan_id=self._state.task_id,
-                objective=objective
-            )
-            logger.info("Collaborative memory initialized for task: %s", self._state.task_id)
 
         self._emit_progress("task_started", {
             "task_id": self._state.task_id,
@@ -297,15 +315,6 @@ class Coordinator:
             # 停止消息消费者
             await self._stop_message_consumer()
 
-            # 关闭协作记忆
-            if self._memory_manager is not None and self._state:
-                try:
-                    self._memory_manager.close_collaborative_memory(self._state.task_id)
-                    # 清理工作记忆
-                    self._memory_manager.cleanup_working_memories(self._state.task_id)
-                except Exception as e:
-                    logger.warning("Failed to close memory: %s", e)
-
     def cancel(self) -> None:
         """取消执行"""
         self._cancelled = True
@@ -358,6 +367,10 @@ class Coordinator:
                             continue
 
                         block_type = block.get("type", "")
+
+                        # GAM: 收集消息用于后续 Memorizer 处理
+                        if worker_name and self.config.gam_enabled:
+                            self._collect_message_for_gam(worker_name, block_type, block)
 
                         if block_type == "text":
                             # 文本内容
@@ -567,21 +580,28 @@ class Coordinator:
         Returns:
             Phase 执行结果
         """
-        # 从协作记忆获取前序 Phase 的上下文（避免 Worker 重复读取文件）
+        # 清空本 Phase 的消息收集
+        self._phase_messages.clear()
+
+        # GAM: 使用 GAMResearcher 进行深度研究（在线阶段）
         memory_context = {}
-        if self._memory_manager is not None:
+        if self._memory_manager is not None and self.config.gam_enabled:
             try:
-                collaborative_memory = self._memory_manager.get_collaborative_memory(
+                pre_memory = await self._memory_manager.gam_deep_research(
+                    query=self._state.objective,
                     plan_id=self._state.task_id
                 )
-                memory_context = collaborative_memory.get_context_for_phase(
-                    phase=phase.phase,
-                    query=self._state.objective
-                )
-                logger.debug("Retrieved memory context for phase %d: %d previous outputs",
-                            phase.phase, len(memory_context.get("previous_outputs", {})))
+                if pre_memory.has_relevant_context():
+                    memory_context = pre_memory.get_context_for_worker()
+                    logger.info(
+                        "GAM Researcher: Retrieved context for phase %d, "
+                        "confidence=%.2f, memos=%d, pages=%d",
+                        phase.phase, pre_memory.confidence_score,
+                        len(pre_memory.retrieved_memos),
+                        len(pre_memory.retrieved_pages)
+                    )
             except Exception as e:
-                logger.warning("Failed to get memory context: %s", e)
+                logger.warning("GAM Researcher failed: %s", e)
 
         # 准备 Worker 任务
         tasks = []
@@ -625,29 +645,32 @@ class Coordinator:
             status=self._determine_phase_status(worker_results),
         )
 
-        # 发布 Phase 结果到协作记忆（供后续 Phase 使用，避免重复读取文件）
-        if self._memory_manager is not None and ContentType is not None:
+        # GAM: 使用 GAMMemorizer 处理 Worker 会话（离线阶段）
+        if self.config.gam_enabled and self._memory_manager is not None and self._memory_manager.model is not None:
             try:
-                collaborative_memory = self._memory_manager.get_collaborative_memory(
-                    plan_id=self._state.task_id
-                )
                 for worker_name, worker_result in worker_results.items():
                     if worker_result.is_success():
-                        # 发布成功的 Worker 输出到协作记忆
-                        collaborative_memory.publish_phase_output(
-                            phase=phase.phase,
-                            worker=worker_name,
-                            output_type=ContentType.TASK_RESULT,
-                            content={
-                                "output": worker_result.output,
-                                "reasoning": worker_result.reasoning,
-                                "iterations": worker_result.iterations,
-                            },
-                            tags=[phase.name, worker_name, "task_result"]
-                        )
-                logger.debug("Published phase %d results to collaborative memory", phase.phase)
+                        session_id = f"{self._state.task_id}_p{phase.phase}_{worker_name}"
+
+                        # 收集该 Worker 的消息历史
+                        messages = self._phase_messages.get(worker_name, [])
+                        if messages:
+                            memo, pages = await self._memory_manager.gam_process_session(
+                                session_id=session_id,
+                                messages=messages,
+                                context={
+                                    "plan_id": self._state.task_id,
+                                    "phase": phase.phase,
+                                    "worker": worker_name,
+                                    "objective": self._state.objective
+                                }
+                            )
+                            logger.info(
+                                "GAM Memorizer: Processed session %s, memo=%s, pages=%d",
+                                session_id, memo.memo_id, len(pages)
+                            )
             except Exception as e:
-                logger.warning("Failed to publish phase results to memory: %s", e)
+                logger.warning("GAM Memorizer failed: %s", e)
 
         return phase_result
 
@@ -1011,3 +1034,28 @@ class Coordinator:
                 self.progress_callback(event_type, data)
             except Exception as exc:
                 logger.warning("Progress callback failed: %s", exc)
+
+    def _collect_message_for_gam(
+        self,
+        worker_name: str,
+        block_type: str,
+        block: Dict[str, Any]
+    ) -> None:
+        """
+        收集消息用于 GAM Memorizer
+
+        Args:
+            worker_name: Worker 名称
+            block_type: 消息块类型 (text, thinking, tool_use, tool_result)
+            block: 消息块内容
+        """
+        if worker_name not in self._phase_messages:
+            self._phase_messages[worker_name] = []
+
+        from datetime import datetime
+
+        self._phase_messages[worker_name].append({
+            "type": block_type,
+            "content": block,
+            "timestamp": datetime.now().isoformat()
+        })

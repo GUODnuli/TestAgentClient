@@ -48,6 +48,7 @@ export function formatMessage(msg: {
   conversationId: string;
   role: string;
   content: string;
+  metadata?: unknown;
   createdAt: Date;
 }) {
   return {
@@ -55,6 +56,7 @@ export function formatMessage(msg: {
     conversation_id: msg.conversationId,
     role: msg.role,
     content: msg.content,
+    metadata: msg.metadata ?? null,
     created_at: msg.createdAt.toISOString(),
   };
 }

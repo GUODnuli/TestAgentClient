@@ -12,13 +12,6 @@ from enum import Enum
 import uuid
 
 
-class MemoryType(str, Enum):
-    """记忆类型枚举"""
-    WORKING = "working"           # Layer 1: 工作记忆 (Worker-Scoped)
-    COLLABORATIVE = "collaborative"  # Layer 2: 协作记忆 (Plan-Scoped)
-    GLOBAL = "global"             # Layer 3: 全局记忆 (Persistent)
-
-
 class ContentType(str, Enum):
     """内容类型枚举"""
     # 分析类
@@ -131,156 +124,23 @@ class LightweightIndex(BaseModel):
         return v.isoformat()
 
 
-class MemoryEntry(BaseModel):
-    """
-    通用记忆条目
-
-    这是三层记忆系统的统一数据格式，支持不同类型的记忆存储。
-    """
-    model_config = ConfigDict(ser_json_timedelta='iso8601')
-
-    entry_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    memory_type: MemoryType
-    content_type: ContentType
-
-    # 来源信息
-    plan_id: Optional[str] = None
-    phase: Optional[int] = None
-    worker: Optional[str] = None
-
-    # 内容
-    content: Dict[str, Any] = Field(default_factory=dict)
-    summary: Optional[str] = None  # 内容摘要（用于快速预览）
-
-    # 时间信息
-    timestamp: datetime = Field(default_factory=datetime.now)
-    expires_at: Optional[datetime] = None  # 过期时间（可选）
-
-    # 检索辅助
-    tags: List[str] = Field(default_factory=list)
-    embedding: Optional[List[float]] = None
-
-    # 关联信息
-    related_entries: List[str] = Field(default_factory=list, description="关联的其他记忆 ID")
-    source_files: List[str] = Field(default_factory=list, description="来源文件路径")
-
-    # 元数据
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-    def to_page(self) -> Page:
-        """转换为 Page 格式"""
-        content_str = self.summary or str(self.content)
-        # Store original content in metadata for later retrieval
-        page_metadata = self.metadata.copy() if self.metadata else {}
-        page_metadata["_original_content"] = self.content
-        return Page(
-            page_id=self.entry_id[:8],
-            content=content_str,
-            timestamp=self.timestamp,
-            context_tags=self.tags,
-            embedding=self.embedding,
-            source_type=self.content_type,
-            source_id=self.entry_id,
-            plan_id=self.plan_id,
-            phase=self.phase,
-            worker=self.worker,
-            metadata=page_metadata
-        )
-
-    @field_serializer('timestamp', 'expires_at')
-    def serialize_datetime(self, v: Optional[datetime]) -> Optional[str]:
-        return v.isoformat() if v else None
-
-
-class SearchQuery(BaseModel):
-    """搜索查询参数"""
-    query: str = Field(..., description="搜索查询文本")
-    top_k: int = Field(default=5, ge=1, le=100)
-
-    # 过滤条件
-    memory_types: Optional[List[MemoryType]] = None
-    content_types: Optional[List[ContentType]] = None
-    plan_id: Optional[str] = None
-    phase: Optional[int] = None
-    phase_range: Optional[tuple] = None  # (min_phase, max_phase)
-    worker: Optional[str] = None
-    tags: Optional[List[str]] = None
-
-    # 时间范围
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
-
-    # 搜索选项
-    use_vector: bool = True
-    use_bm25: bool = True
-    vector_weight: float = Field(default=0.7, ge=0, le=1)
-
-    def to_filters(self) -> Dict[str, Any]:
-        """转换为过滤器字典"""
-        filters = {}
-        if self.memory_types:
-            filters["memory_type"] = {"$in": [t.value for t in self.memory_types]}
-        if self.content_types:
-            filters["content_type"] = {"$in": [t.value for t in self.content_types]}
-        if self.plan_id:
-            filters["plan_id"] = self.plan_id
-        if self.phase is not None:
-            filters["phase"] = self.phase
-        if self.phase_range:
-            filters["phase"] = {"$gte": self.phase_range[0], "$lte": self.phase_range[1]}
-        if self.worker:
-            filters["worker"] = self.worker
-        if self.tags:
-            filters["tags"] = {"$contains": self.tags}
-        return filters
-
-
-class SearchResult(BaseModel):
-    """搜索结果"""
-    entry: MemoryEntry
-    score: float = Field(default=0.0, description="相关性得分")
-    match_type: str = Field(default="hybrid", description="匹配类型: vector/bm25/hybrid")
-    highlights: List[str] = Field(default_factory=list, description="匹配高亮片段")
-
-
-class MemoryStats(BaseModel):
-    """记忆统计信息"""
-    memory_type: MemoryType
-    total_entries: int = 0
-    total_pages: int = 0
-    total_size_bytes: int = 0
-    oldest_entry: Optional[datetime] = None
-    newest_entry: Optional[datetime] = None
-
-    # 按类型统计
-    entries_by_content_type: Dict[str, int] = Field(default_factory=dict)
-    entries_by_phase: Dict[int, int] = Field(default_factory=dict)
-    entries_by_worker: Dict[str, int] = Field(default_factory=dict)
-
-
-class MemoryConfig(BaseModel):
-    """记忆系统配置"""
+class GAMConfig(BaseModel):
+    """GAM 记忆系统配置"""
     enabled: bool = True
     storage_path: str = "./storage/memory"
 
-    # 各层配置
-    working: Dict[str, Any] = Field(default_factory=lambda: {"enabled": True})
-    collaborative: Dict[str, Any] = Field(default_factory=lambda: {
-        "enabled": True,
-        "auto_publish": True,
-        "max_pages_per_plan": 1000
-    })
-    global_memory: Dict[str, Any] = Field(default_factory=lambda: {
-        "enabled": True,
-        "retention_days": 90,
-        "max_entries": 10000
-    })
+    # GAM 参数
+    max_iterations: int = 3
+    min_confidence: float = 0.7
+    memo_max_length: int = 500
+    page_max_length: int = 2000
+    page_overlap: int = 200
 
     # 检索配置
     retrieval: Dict[str, Any] = Field(default_factory=lambda: {
-        "default_top_k": 5,
-        "vector_weight": 0.7,
-        "bm25_weight": 0.3,
+        "default_top_k": 10,
+        "vector_weight": 0.6,
+        "bm25_weight": 0.4,
         "min_score_threshold": 0.3
     })
 
@@ -290,3 +150,114 @@ class MemoryConfig(BaseModel):
         "dimension": 384,
         "batch_size": 32
     })
+
+
+class SessionMemo(BaseModel):
+    """
+    GAM Session Memo - 轻量级会话摘要
+
+    用于快速检索历史会话。由 GAMMemorizer 在 Worker 执行完成后
+    通过 LLM 生成，包含会话的关键信息摘要。
+
+    存储位置: LightweightIndex 中的 memo_store
+    """
+    model_config = ConfigDict(ser_json_timedelta='iso8601')
+
+    # 标识
+    session_id: str = Field(..., description="会话 ID，格式: plan_phase_worker")
+    memo_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+
+    # LLM 生成的内容
+    session_memo: str = Field(..., description="LLM 生成的简洁摘要 (1-3 句话)")
+    key_entities: List[str] = Field(default_factory=list, description="关键实体 (文件、函数、API等)")
+    key_actions: List[str] = Field(default_factory=list, description="主要操作")
+    outcome_summary: str = Field(default="", description="结果摘要: 完成了什么或学到了什么")
+
+    # 元数据
+    timestamp: datetime = Field(default_factory=datetime.now)
+    plan_id: Optional[str] = None
+    phase: Optional[int] = None
+    worker: Optional[str] = None
+
+    # 关联的 Page IDs
+    page_ids: List[str] = Field(default_factory=list, description="关联的详细 Page 列表")
+
+    # 向量嵌入 (用于语义检索)
+    embedding: Optional[List[float]] = Field(default=None, description="memo 内容的向量嵌入")
+
+    @field_serializer('timestamp')
+    def serialize_datetime(self, v: datetime) -> str:
+        return v.isoformat()
+
+    def to_search_text(self) -> str:
+        """转换为可搜索的文本"""
+        parts = [self.session_memo]
+        if self.key_entities:
+            parts.append(f"Entities: {', '.join(self.key_entities)}")
+        if self.key_actions:
+            parts.append(f"Actions: {', '.join(self.key_actions)}")
+        if self.outcome_summary:
+            parts.append(f"Outcome: {self.outcome_summary}")
+        return " | ".join(parts)
+
+
+class PreconstructedMemory(BaseModel):
+    """
+    GAM 预构建记忆 - 在线阶段检索结果
+
+    由 GAMResearcher 的 Deep-Research 循环生成，包含检索到的
+    相关历史记忆和整合后的上下文，供 Worker 使用。
+    """
+    model_config = ConfigDict(ser_json_timedelta='iso8601')
+
+    # 查询信息
+    query: str = Field(..., description="原始查询/目标")
+
+    # 检索结果
+    retrieved_memos: List[SessionMemo] = Field(default_factory=list, description="检索到的 Session Memos")
+    retrieved_pages: List[Page] = Field(default_factory=list, description="检索到的详细 Pages")
+
+    # LLM 整合的上下文
+    context_summary: str = Field(default="", description="LLM 整合的连贯上下文")
+
+    # 搜索元数据
+    search_strategy: Dict[str, Any] = Field(default_factory=dict, description="使用的搜索策略")
+    iterations: int = Field(default=0, description="Deep-Research 迭代次数")
+
+    # 评估结果
+    is_sufficient: bool = Field(default=False, description="信息是否充分")
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0, description="置信度 (0.0-1.0)")
+
+    # 时间戳
+    created_at: datetime = Field(default_factory=datetime.now)
+
+    @field_serializer('created_at')
+    def serialize_datetime(self, v: datetime) -> str:
+        return v.isoformat()
+
+    def get_context_for_worker(self) -> Dict[str, Any]:
+        """获取传递给 Worker 的上下文"""
+        return {
+            "gam_context": self.context_summary,
+            "confidence": self.confidence_score,
+            "retrieved_memo_count": len(self.retrieved_memos),
+            "retrieved_page_count": len(self.retrieved_pages),
+            "is_sufficient": self.is_sufficient,
+            # 提取关键实体供 Worker 参考
+            "key_entities": list(set(
+                entity
+                for memo in self.retrieved_memos
+                for entity in memo.key_entities
+            ))[:20],
+            # 提取关键文件供 Worker 参考（避免重复读取）
+            "processed_files": list(set(
+                entity
+                for memo in self.retrieved_memos
+                for entity in memo.key_entities
+                if entity.endswith(('.py', '.ts', '.js', '.json', '.yaml', '.yml', '.md'))
+            ))[:50]
+        }
+
+    def has_relevant_context(self) -> bool:
+        """检查是否有相关上下文"""
+        return bool(self.retrieved_memos or self.retrieved_pages or self.context_summary)

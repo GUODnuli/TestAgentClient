@@ -6,6 +6,7 @@ import { getSocketManager } from '../../socket/socket-manager.js';
 import {
   createConversationInternal,
   createMessageInternal,
+  createMessageWithMetadataInternal,
   updateConversationTitleInternal,
 } from '../conversation/conversation.service.js';
 import { generateTitle } from '../../llm/title-generator.js';
@@ -96,6 +97,11 @@ export async function* sendMessageStreaming(
 
   const replyId = uuidv4();
   const userMessageId = uuidv4();
+  const assistantMessageId = uuidv4();
+
+  // Collect assistant message content and events for persistence
+  const assistantContent: string[] = [];
+  const assistantEvents: Array<Record<string, unknown>> = [];
 
   // Save user message
   await createMessageInternal(conversationId, 'user', message, userMessageId);
@@ -187,13 +193,45 @@ export async function* sendMessageStreaming(
         const msg = messageQueue.shift()!;
 
         if (msg === null) {
-          // End signal — yield done and exit
+          // End signal — save assistant message and yield done
+          await saveAssistantMessage(
+            conversationId!,
+            assistantMessageId,
+            assistantContent.join(''),
+            assistantEvents,
+            logger
+          );
           yield {
             type: 'done',
             conversation_id: conversationId,
             timestamp: new Date().toISOString(),
           };
           return;
+        }
+
+        // Collect content and events for persistence
+        const msgRecord = msg as Record<string, unknown>;
+        if (msgRecord.type === 'chunk' || msgRecord.type === 'text') {
+          const content = (msgRecord.content as string) || '';
+          assistantContent.push(content);
+          assistantEvents.push({ type: 'text', content });
+        } else if (msgRecord.type === 'thinking') {
+          assistantEvents.push({ type: 'thinking', content: msgRecord.content });
+        } else if (msgRecord.type === 'tool_call') {
+          assistantEvents.push({
+            type: 'tool_call',
+            id: msgRecord.id,
+            name: msgRecord.name,
+            input: msgRecord.input,
+          });
+        } else if (msgRecord.type === 'tool_result') {
+          assistantEvents.push({
+            type: 'tool_result',
+            id: msgRecord.id,
+            name: msgRecord.name,
+            output: msgRecord.output,
+            success: msgRecord.success,
+          });
         }
 
         yield msg as unknown as Record<string, unknown>;
@@ -210,7 +248,14 @@ export async function* sendMessageStreaming(
       }
     }
 
-    // Agent stopped without sending end signal — yield done anyway
+    // Agent stopped without sending end signal — save message and yield done
+    await saveAssistantMessage(
+      conversationId!,
+      assistantMessageId,
+      assistantContent.join(''),
+      assistantEvents,
+      logger
+    );
     yield {
       type: 'done',
       conversation_id: conversationId,
@@ -257,6 +302,49 @@ async function generateAndUpdateTitle(
   } catch (err) {
     logger.error({ err, conversationId }, 'Failed to generate title');
   }
+}
+
+/**
+ * Save assistant message with events to database
+ */
+async function saveAssistantMessage(
+  conversationId: string,
+  messageId: string,
+  content: string,
+  events: Array<Record<string, unknown>>,
+  logger: ReturnType<typeof getLogger>
+): Promise<void> {
+  try {
+    // Merge adjacent text events for cleaner storage
+    const mergedEvents = mergeAdjacentTextEvents(events);
+
+    await createMessageWithMetadataInternal(
+      conversationId,
+      'assistant',
+      content || '(no text content)',
+      messageId,
+      { events: mergedEvents }
+    );
+    logger.debug({ conversationId, messageId, eventCount: mergedEvents.length }, 'Saved assistant message');
+  } catch (err) {
+    logger.error({ err, conversationId, messageId }, 'Failed to save assistant message');
+  }
+}
+
+/**
+ * Merge adjacent text events to reduce storage size
+ */
+function mergeAdjacentTextEvents(events: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const result: Array<Record<string, unknown>> = [];
+  for (const event of events) {
+    const last = result[result.length - 1];
+    if (event.type === 'text' && last?.type === 'text') {
+      last.content = (last.content as string) + (event.content as string);
+    } else {
+      result.push({ ...event });
+    }
+  }
+  return result;
 }
 
 export async function interruptAgent(replyId: string): Promise<boolean> {

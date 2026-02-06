@@ -295,11 +295,18 @@ watch(currentConversationId, async (newId) => {
         api.getConversationPlan(newId).catch(() => null) // 计划可能不存在
       ])
 
-      // 加载消息
-      messages.value = messagesData.map(msg => ({
-        role: msg.role,
-        content: msg.content
-      }))
+      // 加载消息（从 metadata 恢复 events）
+      messages.value = messagesData.map(msg => {
+        const baseMsg = {
+          role: msg.role,
+          content: msg.content
+        }
+        // 如果是 assistant 消息且有 metadata.events，恢复 events
+        if (msg.role === 'assistant' && msg.metadata?.events) {
+          baseMsg.events = msg.metadata.events
+        }
+        return baseMsg
+      })
 
       // 加载计划（如果存在）
       if (planData) {
@@ -828,6 +835,25 @@ onMounted(() => {
   margin: 0 auto;
 }
 
+/* 大屏幕优化：2K/2.5K/4K 屏幕增大内容区宽度 */
+@media (min-width: 1920px) {
+  .chat-messages {
+    max-width: 1000px;
+  }
+}
+
+@media (min-width: 2560px) {
+  .chat-messages {
+    max-width: 1200px;
+  }
+}
+
+@media (min-width: 3440px) {
+  .chat-messages {
+    max-width: 1400px;
+  }
+}
+
 .message {
   margin-bottom: 24px;
 }
@@ -865,6 +891,7 @@ onMounted(() => {
   font-size: 15px;
   line-height: 1.6;
   word-break: break-word;
+  overflow-wrap: anywhere;  /* 增强换行支持 */
 }
 
 .message.user .message-text {
@@ -945,6 +972,28 @@ onMounted(() => {
 
 .bottom-input-container {
   max-width: 800px;
+}
+
+/* 大屏幕优化 */
+@media (min-width: 1920px) {
+  .bottom-input-container,
+  .prompt-input-container {
+    max-width: 1000px;
+  }
+}
+
+@media (min-width: 2560px) {
+  .bottom-input-container,
+  .prompt-input-container {
+    max-width: 1200px;
+  }
+}
+
+@media (min-width: 3440px) {
+  .bottom-input-container,
+  .prompt-input-container {
+    max-width: 1400px;
+  }
 }
 
 /* 文件预览 Tab 样式 */

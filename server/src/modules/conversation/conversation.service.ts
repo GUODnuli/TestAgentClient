@@ -265,6 +265,38 @@ export async function createMessageInternal(
 }
 
 /**
+ * Internal: create message with metadata (used by chat service for assistant messages)
+ */
+export async function createMessageWithMetadataInternal(
+  conversationId: string,
+  role: string,
+  content: string,
+  messageId: string,
+  metadata: Record<string, unknown>
+) {
+  const prisma = getPrisma();
+
+  const message = await prisma.message.create({
+    data: {
+      id: messageId,
+      conversationId,
+      role,
+      content,
+      metadata,
+    },
+  });
+
+  await prisma.conversation.update({
+    where: { id: conversationId },
+    data: { updatedAt: new Date() },
+  });
+
+  await invalidateMessagesCache(conversationId);
+
+  return message;
+}
+
+/**
  * Internal: update conversation title without auth check (used by title generator)
  */
 export async function updateConversationTitleInternal(
