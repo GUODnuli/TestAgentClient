@@ -229,6 +229,7 @@ class Coordinator:
         objective: str,
         context: Optional[Dict[str, Any]] = None,
         session_id: Optional[str] = None,
+        loop_context: Optional[Any] = None,   # LoopContext from AgentLoop (None on first iteration)
     ) -> Dict[str, Any]:
         """
         执行任务
@@ -266,7 +267,7 @@ class Coordinator:
 
         try:
             # 阶段 1: 任务分解
-            plan = await self._plan_task(objective, context)
+            plan = await self._plan_task(objective, context, loop_context=loop_context)
             self._state.plan = plan
 
             self._emit_progress("plan_created", {
@@ -449,6 +450,7 @@ class Coordinator:
         self,
         objective: str,
         context: Optional[Dict[str, Any]],
+        loop_context: Optional[Any] = None,
     ) -> ExecutionPlan:
         """
         任务分解
@@ -477,6 +479,7 @@ class Coordinator:
             context=context or {},
             available_workers=worker_summary,
             available_skills=skill_summary,
+            loop_context=loop_context,
         )
 
         self._emit_progress("planning_completed", {

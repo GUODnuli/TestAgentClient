@@ -141,6 +141,7 @@ class TaskPlanner:
 
         # 加载提示词模板
         self._system_prompt = self._load_prompt("task_decomposition.md")
+        self._continuation_system_prompt = self._build_continuation_system_prompt()
 
     async def create_plan(
         self,
@@ -148,6 +149,7 @@ class TaskPlanner:
         context: Dict[str, Any],
         available_workers: List[Dict[str, Any]],
         available_skills: List[Dict[str, Any]],
+        loop_context: Optional[Any] = None,   # LoopContext from AgentLoop; None on first iteration
     ) -> ExecutionPlan:
         """
         创建执行计划
@@ -157,23 +159,37 @@ class TaskPlanner:
             context: 上下文信息
             available_workers: 可用 Worker 列表
             available_skills: 可用 Skill 列表
+            loop_context: AgentLoop 传入的迭代上下文（续写模式）
 
         Returns:
             执行计划
         """
-        # 构建提示词
-        prompt = self._build_prompt(
-            objective=objective,
-            context=context,
-            workers=available_workers,
-            skills=available_skills,
-        )
+        # Choose prompt mode based on whether we're in a continuation iteration
+        is_continuation = loop_context is not None and loop_context.iteration > 0
 
-        logger.debug("Task planner prompt:\n%s", prompt[:500])
+        if is_continuation:
+            system_prompt = self._continuation_system_prompt
+            prompt = self._build_continuation_prompt(
+                objective=objective,
+                context=context,
+                workers=available_workers,
+                skills=available_skills,
+                loop_context=loop_context,
+            )
+        else:
+            system_prompt = self._system_prompt
+            prompt = self._build_prompt(
+                objective=objective,
+                context=context,
+                workers=available_workers,
+                skills=available_skills,
+            )
+
+        logger.debug("Task planner prompt (continuation=%s):\n%s", is_continuation, prompt[:500])
 
         # 调用 LLM
         messages = [
-            {"role": "system", "content": self._system_prompt},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
 
@@ -281,6 +297,134 @@ Guidelines:
 4. Use `$phase_N.output` syntax to reference outputs from previous phases
 5. Keep tasks atomic and focused
 6. Consider error scenarios and include validation steps if needed
+""")
+
+        return "\n\n".join(parts)
+
+    def _build_continuation_system_prompt(self) -> str:
+        """System prompt used for continuation (iteration > 0) planning."""
+        return """\
+You are a continuation planning assistant for an autonomous agent loop.
+Previous execution iterations have completed some work toward the objective.
+Your job is to plan ONLY the remaining work needed to bridge the gap between
+the current state and the fully achieved objective.
+
+Planning principles:
+1. Do NOT repeat steps that were already successfully completed
+2. Target each phase specifically at the remaining_gaps identified by the evaluator
+3. Reference existing artifacts (file paths, test results) in task descriptions when relevant
+4. Keep each phase atomic and focused on a single concern
+5. If the remaining work is small, consolidate into fewer phases rather than over-decomposing
+"""
+
+    def _build_continuation_prompt(
+        self,
+        objective: str,
+        context: Dict[str, Any],
+        workers: List[Dict[str, Any]],
+        skills: List[Dict[str, Any]],
+        loop_context: Any,
+    ) -> str:
+        """
+        Build the user message for a continuation iteration.
+
+        Includes:
+        - Final iteration warning (if approaching max_iterations)
+        - Accumulated iteration history (compressed)
+        - Remaining gaps
+        - Available workers/skills (same format as standard prompt)
+        """
+        parts = []
+
+        # Final iteration warning block
+        max_iters = getattr(loop_context, 'max_iterations', None)
+        current_iter = loop_context.iteration
+        if max_iters is not None and current_iter >= max_iters - 2:
+            parts.append(
+                f"IMPORTANT: This is iteration {current_iter + 1} of {max_iters} "
+                f"(the FINAL or second-to-last iteration).\n\n"
+                "You must:\n"
+                "1. Summarize all work completed across all previous iterations\n"
+                "2. Complete any remaining critical tasks if feasible within this iteration\n"
+                "3. DO NOT start new long-running tool calls that cannot finish in this session\n"
+                "4. Produce a clear final summary of: what was accomplished, what remains unfinished,\n"
+                "   and specific recommendations for the user on next steps\n"
+            )
+
+        # Iteration history
+        parts.append(f"## Original Objective\n{objective}")
+        parts.append(f"## Execution History\n{loop_context.to_context_string()}")
+
+        # Remaining gaps summary
+        all_gaps = loop_context.all_remaining_gaps
+        if all_gaps:
+            gap_list = "\n".join(f"- {g}" for g in all_gaps)
+            parts.append(f"## Remaining Gaps (what still needs to be done)\n{gap_list}")
+        else:
+            parts.append("## Remaining Gaps\nNot yet assessed — plan all unfinished work.")
+
+        # Context
+        if context:
+            parts.append(
+                f"## Context\n```json\n{json.dumps(context, ensure_ascii=False, indent=2)}\n```"
+            )
+
+        # Available Workers
+        workers_desc = []
+        for w in workers:
+            tools_str = ", ".join(w.get("tools", [])) or "none"
+            workers_desc.append(
+                f"- **{w['name']}**: {w.get('description', 'No description')}\n"
+                f"  - Tools: {tools_str}\n"
+                f"  - Mode: {w.get('mode', 'react')}"
+            )
+        parts.append("## Available Workers\n" + "\n".join(workers_desc))
+
+        # Available Skills
+        if skills:
+            skills_desc = []
+            for s in skills:
+                tags_str = ", ".join(s.get("tags", [])) or "none"
+                skills_desc.append(
+                    f"- **{s['name']}**: {s.get('description', 'No description')}\n"
+                    f"  - Tags: {tags_str}"
+                )
+            parts.append("## Available Skills\n" + "\n".join(skills_desc))
+
+        # Output format
+        parts.append("""\
+## Output Format
+
+Generate a continuation execution plan in JSON format targeting ONLY the remaining gaps:
+
+```json
+{
+  "phases": [
+    {
+      "phase": 1,
+      "name": "Phase name",
+      "parallel": false,
+      "workers": [
+        {
+          "worker": "worker_name",
+          "task": "Task description for this worker",
+          "input": {"key": "value"},
+          "depends_on": []
+        }
+      ],
+      "depends_on": []
+    }
+  ],
+  "completion_criteria": "Description of what constitutes task completion"
+}
+```
+
+Guidelines:
+1. Use only workers from the Available Workers list
+2. Focus exclusively on the Remaining Gaps listed above
+3. Set `parallel: true` for workers that can run simultaneously
+4. Use `depends_on` to specify dependencies (reference phase numbers like "phase_1")
+5. Keep tasks atomic and focused
 """)
 
         return "\n\n".join(parts)

@@ -94,5 +94,13 @@ def get_args() -> Namespace:
         help="LLM 生成额外参数（JSON 字符串）"
     )
 
+    parser.add_argument(
+        "--max-loop-iterations",
+        type=int,
+        default=5,
+        dest="max_loop_iterations",
+        help="AgentLoop 最大迭代次数（默认 5，目标达成时自动提前退出）"
+    )
+
     args = parser.parse_args()
     return args

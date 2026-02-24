@@ -199,42 +199,75 @@ def _create_progress_callback(studio_url: str, reply_id: str):
 
 
 def _push_coordinator_result_to_frontend(studio_url: str, reply_id: str, result: dict):
-    """将 Coordinator 执行结果推送到前端"""
+    """将 Coordinator / AgentLoop 执行结果推送到前端"""
     import httpx
 
     if not studio_url or not reply_id:
         return
 
-    # 生成结果摘要文本
-    status = result.get("status", "unknown")
-    objective = result.get("objective", "")
-    error = result.get("error")
+    # 支持 AgentLoop 结果格式和原始 Coordinator 结果格式
+    is_loop_result = "iterations_run" in result
 
-    # 构建结果摘要
     summary_parts = []
-    summary_parts.append(f"## Coordinator 执行完成\n")
-    summary_parts.append(f"**状态**: {status}\n")
 
-    if error:
-        summary_parts.append(f"**错误**: {error}\n")
+    if is_loop_result:
+        achieved = result.get("achieved", False)
+        iterations_run = result.get("iterations_run", 1)
+        error = result.get("error")
 
-    # 添加 Phase 结果摘要
-    phase_results = result.get("phase_results", [])
-    if phase_results:
-        summary_parts.append(f"\n### 执行阶段 ({len(phase_results)} 个)\n")
-        for i, phase in enumerate(phase_results, 1):
-            phase_name = phase.get("phase_name", f"Phase {i}")
-            phase_status = phase.get("status", "unknown")
-            summary_parts.append(f"- **{phase_name}**: {phase_status}\n")
+        summary_parts.append(f"## AgentLoop 执行完成\n")
+        summary_parts.append(f"**状态**: {'已达成目标' if achieved else '目标未完全达成'}\n")
+        summary_parts.append(f"**迭代次数**: {iterations_run}\n")
 
-            # 添加 Worker 结果
-            worker_results = phase.get("worker_results", {})
-            for worker_name, worker_result in worker_results.items():
-                worker_status = worker_result.get("status", "unknown")
-                worker_output = worker_result.get("output", "")
-                if worker_output and len(str(worker_output)) > 200:
-                    worker_output = str(worker_output)[:200] + "..."
-                summary_parts.append(f"  - {worker_name}: {worker_status}\n")
+        if error:
+            summary_parts.append(f"**错误**: {error}\n")
+
+        # Final evaluation
+        final_eval = result.get("final_evaluation", {})
+        if final_eval:
+            reason = final_eval.get("reason", "")
+            confidence = final_eval.get("confidence", 0)
+            if reason:
+                summary_parts.append(f"**评估**: {reason} (置信度: {confidence:.0%})\n")
+
+        # Completed tasks
+        completed_tasks = result.get("completed_tasks", [])
+        if completed_tasks:
+            summary_parts.append(f"\n### 已完成任务 ({len(completed_tasks)} 项)\n")
+            for task in completed_tasks[:10]:  # 最多显示 10 项
+                summary_parts.append(f"- {task}\n")
+            if len(completed_tasks) > 10:
+                summary_parts.append(f"- ... 共 {len(completed_tasks)} 项\n")
+
+        # Remaining gaps
+        remaining = final_eval.get("remaining_gaps", [])
+        if remaining:
+            summary_parts.append(f"\n### 剩余工作\n")
+            for gap in remaining:
+                summary_parts.append(f"- {gap}\n")
+    else:
+        # Original coordinator format (backward compat)
+        status = result.get("status", "unknown")
+        error = result.get("error")
+
+        summary_parts.append(f"## Coordinator 执行完成\n")
+        summary_parts.append(f"**状态**: {status}\n")
+
+        if error:
+            summary_parts.append(f"**错误**: {error}\n")
+
+        phase_results = result.get("phase_results", [])
+        if phase_results:
+            summary_parts.append(f"\n### 执行阶段 ({len(phase_results)} 个)\n")
+            for i, phase in enumerate(phase_results, 1):
+                phase_name = phase.get("phase_name", f"Phase {i}")
+                phase_status = phase.get("status", "unknown")
+                summary_parts.append(f"- **{phase_name}**: {phase_status}\n")
+
+                worker_results = phase.get("worker_results", {})
+                for worker_name, worker_result in worker_results.items():
+                    worker_status = worker_result.get("status", "unknown")
+                    summary_parts.append(f"  - {worker_name}: {worker_status}\n")
 
     summary_text = "".join(summary_parts)
 
@@ -337,15 +370,28 @@ async def run_coordinator(args, toolkit: Toolkit, model, worker_model=None):
     AgentHooks.url = args.studio_url
     AgentHooks.reply_id = args.reply_id
 
-    # 执行 Coordinator
-    result = await coordinator.execute(
+    # 使用 AgentLoop 驱动 Coordinator 多轮执行
+    from loop.agent_loop import AgentLoop
+    from loop.goal_evaluator import GoalEvaluator
+
+    goal_evaluator = GoalEvaluator(model=model)
+
+    max_loop_iterations = getattr(args, "max_loop_iterations", 1)
+    agent_loop = AgentLoop(
+        coordinator=coordinator,
+        goal_evaluator=goal_evaluator,
+        max_iterations=max_loop_iterations,
+        confidence_threshold=0.7,
+    )
+
+    result = await agent_loop.run(
         objective=objective,
         context={"workspace": args.workspace},
         session_id=args.conversation_id,
     )
 
     # 输出结果摘要
-    print(f"[INFO] 执行结果: {result.get('status')}")
+    print(f"[INFO] 执行结果: achieved={result.get('achieved')}, iterations={result.get('iterations_run')}")
     if result.get("error"):
         print(f"[ERROR] {result['error']}")
 
