@@ -179,7 +179,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, defineExpose, defineProps } from 'vue'
+import { h, ref, computed, watch, defineExpose, defineProps } from 'vue'
 import {
   Connection,
   ArrowRight,
@@ -187,63 +187,82 @@ import {
   UserFilled,
   CircleCheckFilled,
 } from '@element-plus/icons-vue'
-import api from '@/api'
+import { api } from '@/api'
 
 // ─── TaskNodeItem (递归子组件) ─────────────────────────────────────────────────
-// 定义在 <script setup> 顶层，Vue 模板编译器自动将 PascalCase 变量识别为组件
+// 使用 render 函数代替 template 字符串，避免 Vue 3 runtime-only 构建缺少模板编译器
+// 导致组件渲染为空注释节点 (<!---->) 的问题。
 const TaskNodeItem = {
   name: 'TaskNodeItem',
   props: {
     node: { type: Object, required: true },
     taskNodes: { type: Object, required: true },
   },
-  template: `
-    <div class="task-node" :class="'node-' + node.status">
-      <div class="node-row">
-        <div class="node-status-icon">
-          <span v-if="node.status === 'completed'" class="icon-completed">✓</span>
-          <span v-else-if="node.status === 'running'" class="icon-running">
-            <span class="pulse-ring"></span>
-          </span>
-          <span v-else-if="node.status === 'failed'" class="icon-failed">✗</span>
-          <span v-else class="icon-pending">○</span>
-        </div>
-        <div class="node-body">
-          <div class="node-desc">{{ node.description }}</div>
-          <div class="node-meta">
-            <span class="node-worker-badge">{{ node.worker_name }}</span>
-            <span class="node-id">{{ node.task_id }}</span>
-          </div>
-          <div v-if="node.status === 'completed' && node.result" class="node-result">
-            {{ node.result }}
-          </div>
-          <div v-if="node.status === 'failed' && node.error" class="node-error">
-            {{ node.error }}
-          </div>
-        </div>
-      </div>
-      <!-- 子节点递归 -->
-      <div v-if="childIds.length > 0" class="node-children">
-        <task-node-item
-          v-for="childId in childIds"
-          :key="childId"
-          :node="taskNodes[childId]"
-          :task-nodes="taskNodes"
-        />
-      </div>
-    </div>
-  `,
   computed: {
     childIds() {
       return Object.values(this.taskNodes)
         .filter(n => n.parent_id === this.node.task_id)
         .map(n => n.task_id)
     }
-  }
+  },
+  render() {
+    const { node, taskNodes, childIds } = this
+
+    // 状态图标
+    let statusIcon
+    if (node.status === 'completed') {
+      statusIcon = h('span', { class: 'icon-completed' }, '✓')
+    } else if (node.status === 'running') {
+      statusIcon = h('span', { class: 'icon-running' }, [
+        h('span', { class: 'pulse-ring' })
+      ])
+    } else if (node.status === 'failed') {
+      statusIcon = h('span', { class: 'icon-failed' }, '✗')
+    } else {
+      statusIcon = h('span', { class: 'icon-pending' }, '○')
+    }
+
+    // 节点主体内容
+    const bodyChildren = [
+      h('div', { class: 'node-desc' }, node.description),
+      h('div', { class: 'node-meta' }, [
+        h('span', { class: 'node-worker-badge' }, node.worker_name),
+        h('span', { class: 'node-id' }, node.task_id),
+      ]),
+    ]
+
+    if (node.status === 'completed' && node.result) {
+      bodyChildren.push(h('div', { class: 'node-result' }, node.result))
+    }
+    if (node.status === 'failed' && node.error) {
+      bodyChildren.push(h('div', { class: 'node-error' }, node.error))
+    }
+
+    // 节点行
+    const nodeRow = h('div', { class: 'node-row' }, [
+      h('div', { class: 'node-status-icon' }, [statusIcon]),
+      h('div', { class: 'node-body' }, bodyChildren),
+    ])
+
+    // 子节点递归
+    const children = [nodeRow]
+    if (childIds.length > 0) {
+      children.push(
+        h('div', { class: 'node-children' },
+          childIds.map(childId =>
+            h(TaskNodeItem, {
+              key: childId,
+              node: taskNodes[childId],
+              taskNodes,
+            })
+          )
+        )
+      )
+    }
+
+    return h('div', { class: ['task-node', 'node-' + node.status] }, children)
+  },
 }
-// 递归自引用：必须在 const 定义完成后设置
-// string template 中的 <task-node-item> 通过 components 选项解析
-TaskNodeItem.components = { TaskNodeItem }
 
 const props = defineProps({
   conversationId: {
