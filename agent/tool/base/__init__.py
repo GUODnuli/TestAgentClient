@@ -18,6 +18,7 @@ from .file_write import write_file
 from .file_edit import edit_file
 from .file_search import glob_files, grep_files
 from .web_fetch import web_fetch
+from .output_file_context import OutputFileContext, get_output_context
 
 __all__ = [
     "ToolConfig",
@@ -30,4 +31,7 @@ __all__ = [
     "glob_files",
     "grep_files",
     "web_fetch",
+    # Output file context (singleton)
+    "OutputFileContext",
+    "get_output_context",
 ]

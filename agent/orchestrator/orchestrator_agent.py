@@ -176,10 +176,12 @@ class OrchestratorAgent:
         orch_toolkit = Toolkit()
         registered = set()
 
-        # 策略 1: 尝试通过 Toolkit 内部属性提取只读工具（含 write_output_file / read_output_file / list_output_files）
+        # 策略 1: 尝试通过 Toolkit 内部属性提取只读工具
+        # write_output_file 已移除（Orchestrator 不需要写文件，由 Workers 负责）
+        # read_output_file / list_output_files 由 output_manager Skill 静态注册，可被提取
         READ_TOOL_NAMES = {
             "read_file", "glob_files", "grep_files",
-            "write_output_file", "read_output_file", "list_output_files",
+            "read_output_file", "list_output_files",
         }
         try:
             # agentscope Toolkit 可能将工具存储在不同属性下
@@ -194,7 +196,8 @@ class OrchestratorAgent:
                 for tool_name, tool_obj in tools_dict.items():
                     if tool_name in READ_TOOL_NAMES:
                         func = (
-                            getattr(tool_obj, "_func", None)
+                            getattr(tool_obj, "original_func", None)  # FIX: agentscope RegisteredToolFunction 使用此属性
+                            or getattr(tool_obj, "_func", None)
                             or getattr(tool_obj, "func", None)
                             or (tool_obj if callable(tool_obj) else None)
                         )
@@ -209,9 +212,9 @@ class OrchestratorAgent:
             logger.debug("[Orchestrator] Toolkit introspection failed: %s", exc)
 
         # 策略 2: 直接从 tool.base 模块导入（回退）
-        # write_output_file / read_output_file / list_output_files 是工厂函数生成的闭包，不在 tool.base 中，跳过
+        # read_output_file / list_output_files 由 output_manager Skill 提供，不在 tool.base 中，跳过
         still_needed = (READ_TOOL_NAMES - registered) - {
-            "write_output_file", "read_output_file", "list_output_files"
+            "read_output_file", "list_output_files"
         }
         if still_needed:
             try:
