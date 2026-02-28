@@ -102,5 +102,21 @@ def get_args() -> Namespace:
         help="AgentLoop 最大迭代次数（默认 5，目标达成时自动提前退出）"
     )
 
+    parser.add_argument(
+        "--user-id",
+        type=str,
+        default="",
+        dest="user_id",
+        help="用户 ID（用于输出目录命名）"
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="",
+        dest="output_dir",
+        help="可下载文件的输出根目录"
+    )
+
     args = parser.parse_args()
     return args

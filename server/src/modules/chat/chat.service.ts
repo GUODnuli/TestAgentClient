@@ -254,6 +254,16 @@ uploaded_files: (none)
             output: msgRecord.output,
             success: msgRecord.success,
           });
+        } else if (msgRecord.type === 'coordinator_event') {
+          // Persist task tree events so they can be restored on page reload
+          const subType = msgRecord.event_type as string;
+          if (subType && subType.startsWith('task_tree_')) {
+            assistantEvents.push({
+              type: 'coordinator_event',
+              event_type: subType,
+              data: (msgRecord.data ?? {}) as Record<string, unknown>,
+            });
+          }
         }
 
         yield msg as unknown as Record<string, unknown>;

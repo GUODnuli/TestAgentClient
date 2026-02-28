@@ -164,6 +164,7 @@ class WorkerRunner:
         formatter: Optional[FormatterBase] = None,
         progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         message_queue: Optional[asyncio.Queue] = None,
+        task_manager: Optional[Any] = None,
     ):
         """
         初始化 Worker 执行器
@@ -175,10 +176,20 @@ class WorkerRunner:
             formatter: 消息格式化器（可选，如果为 None 将尝试自动获取）
             progress_callback: 进度回调函数，签名为 (event_type, data)
             message_queue: Agent 消息队列
+            task_manager: TaskManager 实例（可选）。如果提供，向 Worker toolkit
+                          注入 spawn_task 工具，允许 Worker 派发子任务。
         """
         self.config = config
         self.model = model
-        self.toolkit = toolkit or Toolkit()
+        self._task_manager = task_manager
+
+        # 如果有 task_manager，向 toolkit 注入子任务工具
+        base_toolkit = toolkit or Toolkit()
+        if task_manager is not None:
+            self.toolkit = self._build_toolkit_with_subtask_tools(base_toolkit, task_manager)
+        else:
+            self.toolkit = base_toolkit
+
         self.formatter = formatter
         self.progress_callback = progress_callback
         self.message_queue = message_queue  # 用于收集 Agent 输出的消息队列
@@ -186,6 +197,42 @@ class WorkerRunner:
         # 运行状态
         self._cancelled = False
         self._current_task: Optional[WorkerTask] = None
+
+    def _build_toolkit_with_subtask_tools(self, base_toolkit: Toolkit, task_manager: Any) -> Toolkit:
+        """
+        向 toolkit 注入 spawn_task 工具，使 Worker 可以主动派发子任务。
+
+        Args:
+            base_toolkit: 原始 toolkit
+            task_manager: TaskManager 实例
+
+        Returns:
+            扩展后的 toolkit（复用原有 toolkit 对象，直接在其上注册工具）
+        """
+        try:
+            from orchestrator.orchestrator_tools import make_orchestrator_tools
+        except ImportError:
+            try:
+                from ..orchestrator.orchestrator_tools import make_orchestrator_tools
+            except ImportError:
+                logger.warning("Could not import make_orchestrator_tools, sub-task injection skipped")
+                return base_toolkit
+
+        available_workers = list(task_manager._workers.keys()) if hasattr(task_manager, "_workers") else []
+        sub_tools = make_orchestrator_tools(task_manager, available_workers)
+
+        # 只注入 spawn_task（Worker 不需要 create_task / spawn_and_wait 分步接口，
+        # 也不注入 list_tasks —— Worker 的 child TaskManager 始终为空会造成困惑）
+        for tool_func in sub_tools:
+            if tool_func.__name__ == "spawn_task":
+                try:
+                    base_toolkit.register_tool_function(tool_func)
+                    logger.debug("Injected sub-task tool: %s", tool_func.__name__)
+                except Exception:
+                    # 共享 toolkit 上已注册同名函数（前一个 Worker 已注入），静默跳过
+                    pass
+
+        return base_toolkit
 
     async def run(self, task: WorkerTask) -> WorkerResult:
         """

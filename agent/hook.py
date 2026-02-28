@@ -31,6 +31,10 @@ _sent_tool_result_ids: Dict[str, Set[str]] = {}
 # 线程锁，保护全局可变状态（主线程写入，线程池清理）
 _state_lock = threading.Lock()
 
+# 线程局部变量：Worker 线程设置 suppress.push = True 后，该线程的所有 hook 调用静默，
+# 不向前端推送任何事件。Orchestrator 主线程不受影响。
+_suppress = threading.local()
+
 
 class AgentHooks:
     """
@@ -139,6 +143,10 @@ Agent 钩子管理类
             agent: Agent 实例
             kwargs: 包含 msg 的字典
         """
+        # Worker 子线程设置了 suppress.push 后静默，不向前端推送
+        if getattr(_suppress, 'push', False):
+            return
+
         msg = kwargs["msg"]
         reply_id = cls.reply_id
         if not reply_id:
@@ -192,13 +200,22 @@ Agent 钩子管理类
                     if block_type == "tool_use":
                         tool_id = block.get("id", "")
                         if tool_id and tool_id not in _sent_tool_ids[reply_id]:
-                            _sent_tool_ids[reply_id].add(tool_id)
                             tool_input = block.get("input", {})
                             if not isinstance(tool_input, (dict, list, str)):
                                 try:
                                     tool_input = json.loads(str(tool_input))
                                 except (json.JSONDecodeError, TypeError, ValueError):
                                     tool_input = str(tool_input)
+                            # DashScope streaming: input={} while raw_input holds the
+                            # partial JSON string being accumulated. Only send once
+                            # the input dict is populated (final chunk), OR when there
+                            # is no raw_input (genuinely empty-param tool).
+                            input_empty = isinstance(tool_input, dict) and not tool_input
+                            has_raw_input = bool(block.get("raw_input"))
+                            if input_empty and has_raw_input:
+                                # Still streaming — skip and wait for the final chunk
+                                continue
+                            _sent_tool_ids[reply_id].add(tool_id)
                             events.append({
                                 "type": "tool_call",
                                 "id": tool_id,
@@ -242,12 +259,16 @@ Agent 钩子管理类
     def post_reply_hook(cls, agent: AgentBase, *args, **kwargs) -> None:
         """
         Agent 回复完成后的钩子，发送完成信号到 Server
-        
+
         使用线程池执行，不阻塞主线程。
-        
+
         Args:
             agent: Agent 实例
         """
+        # Worker 子线程静默，避免错误地提前发送 finished 信号
+        if getattr(_suppress, 'push', False):
+            return
+
         reply_id = cls.reply_id
         if not reply_id:
             return

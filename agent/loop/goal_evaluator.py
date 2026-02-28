@@ -94,12 +94,31 @@ class GoalEvaluator:
             return self._parse_response(response_text)
         except Exception as exc:
             logger.warning("GoalEvaluator LLM call failed: %s", exc)
-            # Fail-open: assume not yet achieved, allow loop to continue
+            # 当评估调用失败时，检查最近一次迭代结果的 status 字段。
+            # 如果 Coordinator/Orchestrator 已经标记为 "completed"，视为目标达成，
+            # 避免因 GoalEvaluator 故障而导致 AgentLoop 无效空转。
+            if iteration_summaries:
+                last = iteration_summaries[-1]
+                last_status = getattr(last, "status", None) or (
+                    last.get("status") if isinstance(last, dict) else None
+                )
+                if last_status == "completed":
+                    logger.info(
+                        "GoalEvaluator failed but last iteration status=completed; treating as achieved"
+                    )
+                    return GoalEvaluation(
+                        achieved=True,
+                        confidence=0.7,
+                        reason=f"Evaluation failed ({exc}), but coordinator reported completed",
+                        remaining_gaps=[],
+                        should_stop=True,
+                    )
             return GoalEvaluation(
                 achieved=False,
                 confidence=0.5,
                 reason=f"Evaluation failed: {exc}",
                 remaining_gaps=["Could not evaluate — continuing"],
+                should_stop=False,
             )
 
     # ------------------------------------------------------------------

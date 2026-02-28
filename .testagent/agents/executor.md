@@ -3,7 +3,7 @@ name: executor
 description: >
   Task execution specialist for performing operations and modifications.
   Use for tasks requiring file operations, shell commands, API testing, and system interactions.
-tools: [execute_shell, read_file, write_file, edit_file, glob_files, execute_api_test, validate_response, capture_metrics, send_request]
+tools: [execute_shell, read_file, write_file, edit_file, glob_files, execute_api_test, validate_response, capture_metrics, send_request, write_output_file]
 model: qwen3-max
 mode: react
 max_iterations: 15
@@ -48,7 +48,7 @@ When tasked with API testing, **use dedicated tools instead of execute_shell**:
 - **`validate_response(response_json, assertions_json)`** — Validate response against assertions
 - **`capture_metrics(results_json)`** — Summarize test performance metrics
 
-**Workflow**: Build test case JSON from Context → `execute_api_test` → `capture_metrics` → `write_file` to save results
+**Workflow**: Build test case JSON from Context → `execute_api_test` → `capture_metrics` → **`write_output_file(filename, content)`** to save results for user download (fall back to `write_file` if unavailable)
 
 ### Error Reflection (CRITICAL — on 4xx/5xx responses)
 

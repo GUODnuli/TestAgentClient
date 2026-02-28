@@ -169,6 +169,29 @@ def _create_progress_callback(studio_url: str, reply_id: str):
                 "sequence": sequence_counter["value"],
             })
 
+        elif event_type == "task_tree_node_created":
+            # 新任务树节点出现
+            events.append({
+                "type": "coordinator_event",
+                "event_type": event_type,
+                "data": data,   # {task_id, parent_id, description, worker_name, status, depth}
+                "sequence": sequence_counter["value"],
+            })
+
+        elif event_type in (
+            "task_tree_node_started",
+            "task_tree_node_completed",
+            "task_tree_node_failed",
+            "task_tree_snapshot",
+        ):
+            # 任务树状态变更 / 全量快照
+            events.append({
+                "type": "coordinator_event",
+                "event_type": event_type,
+                "data": data,
+                "sequence": sequence_counter["value"],
+            })
+
         else:
             # 其他事件作为 coordinator_event
             events.append({
@@ -466,6 +489,21 @@ async def main():
     # 注册 reset_equipped_tools 到基础工具组，允许所有 Worker 动态激活/停用工具组
     # 这是 AgentScope 内置方法，Worker 调用 reset_equipped_tools(group_name=True) 即可激活对应工具组
     toolkit.register_tool_function(toolkit.reset_equipped_tools)
+
+    # 注册输出目录工具（如果配置了输出目录）
+    if getattr(args, "output_dir", "") and getattr(args, "user_id", ""):
+        from tool.base.write_output_file import make_write_output_file
+        from tool.base.read_output_file import make_read_output_file
+        _out_ctx = dict(
+            user_id=args.user_id,
+            conversation_id=args.conversation_id,
+            output_dir=args.output_dir,
+        )
+        toolkit.register_tool_function(make_write_output_file(**_out_ctx))
+        read_output_tool, list_output_tool = make_read_output_file(**_out_ctx)
+        toolkit.register_tool_function(read_output_tool)
+        toolkit.register_tool_function(list_output_tool)
+        print(f"[OK] 输出目录工具已注册 (write/read/list)，路径: {args.output_dir}/{args.user_id}/{args.conversation_id}")
 
     # 获取模型
     # 流式模型用于 Coordinator 的直接 LLM 调用（任务规划、评估等）

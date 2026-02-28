@@ -350,3 +350,84 @@ export async function getConversationPlan(conversationId: string, userId: string
 
   return planService.getPlan(conversationId);
 }
+
+/**
+ * Get task tree snapshot by replaying task_tree_* events stored in message metadata
+ */
+export async function getTaskTreeSnapshot(
+  conversationId: string,
+  userId: string
+): Promise<{ nodes: Record<string, unknown>[] }> {
+  const prisma = getPrisma();
+
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+  });
+  if (!conversation) throw new NotFoundError('对话');
+  if (conversation.userId !== userId) throw new ForbiddenError('无权访问');
+
+  const messages = await prisma.message.findMany({
+    where: { conversationId },
+    orderBy: { createdAt: 'asc' },
+    select: { metadata: true },
+  });
+
+  const taskTreeEvents: Array<{ event_type: string; data: Record<string, unknown> }> = [];
+  for (const msg of messages) {
+    const meta = msg.metadata as Record<string, unknown> | null;
+    const events = meta?.events;
+    if (!Array.isArray(events)) continue;
+    for (const e of events) {
+      const ev = e as Record<string, unknown>;
+      if (
+        ev.type === 'coordinator_event' &&
+        typeof ev.event_type === 'string' &&
+        ev.event_type.startsWith('task_tree_')
+      ) {
+        taskTreeEvents.push({ event_type: ev.event_type, data: (ev.data ?? {}) as Record<string, unknown> });
+      }
+    }
+  }
+
+  const nodes: Record<string, Record<string, unknown>> = {};
+  for (const { event_type, data } of taskTreeEvents) {
+    switch (event_type) {
+      case 'task_tree_snapshot':
+        Object.keys(nodes).forEach(k => delete nodes[k]);
+        for (const n of (data.nodes ?? []) as Record<string, unknown>[]) {
+          nodes[n.task_id as string] = n;
+        }
+        break;
+      case 'task_tree_node_created':
+        nodes[data.task_id as string] = {
+          task_id: data.task_id,
+          description: data.description,
+          worker_name: data.worker_name,
+          status: data.status ?? 'pending',
+          result: null,
+          error: null,
+          parent_id: data.parent_id ?? null,
+          depth: data.depth ?? 0,
+        };
+        break;
+      case 'task_tree_node_started':
+        if (nodes[data.task_id as string])
+          nodes[data.task_id as string].status = 'running';
+        break;
+      case 'task_tree_node_completed':
+        if (nodes[data.task_id as string]) {
+          nodes[data.task_id as string].status = 'completed';
+          nodes[data.task_id as string].result = data.result_summary ?? null;
+        }
+        break;
+      case 'task_tree_node_failed':
+        if (nodes[data.task_id as string]) {
+          nodes[data.task_id as string].status = 'failed';
+          nodes[data.task_id as string].error = data.error ?? null;
+        }
+        break;
+    }
+  }
+
+  return { nodes: Object.values(nodes) };
+}

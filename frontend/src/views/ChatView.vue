@@ -9,14 +9,20 @@
           
           <div class="prompt-input-container">
             <!-- 文件预览区 -->
-            <div v-if="selectedFile" class="file-preview-tab">
-              <div class="file-info">
-                <el-icon><Document /></el-icon>
-                <span class="file-name">{{ selectedFile.name }}</span>
+            <div v-if="selectedFiles.length > 0" class="file-preview-list">
+              <div
+                v-for="(file, idx) in selectedFiles"
+                :key="idx"
+                class="file-preview-tab"
+              >
+                <div class="file-info">
+                  <el-icon><Document /></el-icon>
+                  <span class="file-name">{{ file.name }}</span>
+                </div>
+                <button class="cancel-file-btn" @click="cancelFile(idx)">
+                  <el-icon><Close /></el-icon>
+                </button>
               </div>
-              <button class="cancel-file-btn" @click="cancelFile">
-                <el-icon><Close /></el-icon>
-              </button>
             </div>
 
             <div class="prompt-input-input-area">
@@ -39,10 +45,10 @@
                 <el-icon><Paperclip /></el-icon>
               </button>
               <div class="spacer"></div>
-              <button 
-                class="action-btn send-btn" 
-                @click="sendMessage" 
-                :disabled="(!inputMessage.trim() && !selectedFile) || loading"
+              <button
+                class="action-btn send-btn"
+                @click="sendMessage"
+                :disabled="(!inputMessage.trim() && !selectedFiles.length) || loading"
                 title="发送消息"
               >
                 <el-icon><Top /></el-icon>
@@ -156,25 +162,26 @@
           <!-- 计划步骤展示组件 -->
           <PlanStepBar :planData="currentPlanData" />
           
-          <!-- Coordinator 执行计划卡片 (浮动在右侧，不挤压主内容) -->
-          <CoordinatorPlanCard
-            :plan="coordinatorPlan"
-            :activePhase="activeCoordinatorPhase"
-            :completedPhases="completedCoordinatorPhases"
-            :phaseOutputs="coordinatorPhaseOutputs"
-          />
+          <!-- 任务树/执行计划面板 (浮动在右侧，支持旧 phase 模式和新任务树模式) -->
+          <TaskTreePanel ref="taskTreePanel" :conversation-id="currentConversationId" />
 
           <div class="bottom-input-wrapper">
             <div class="bottom-input-container">
               <!-- 文件预览区 -->
-              <div v-if="selectedFile" class="file-preview-tab">
-                <div class="file-info">
-                  <el-icon><Document /></el-icon>
-                  <span class="file-name">{{ selectedFile.name }}</span>
+              <div v-if="selectedFiles.length > 0" class="file-preview-list">
+                <div
+                  v-for="(file, idx) in selectedFiles"
+                  :key="idx"
+                  class="file-preview-tab"
+                >
+                  <div class="file-info">
+                    <el-icon><Document /></el-icon>
+                    <span class="file-name">{{ file.name }}</span>
+                  </div>
+                  <button class="cancel-file-btn" @click="cancelFile(idx)">
+                    <el-icon><Close /></el-icon>
+                  </button>
                 </div>
-                <button class="cancel-file-btn" @click="cancelFile">
-                  <el-icon><Close /></el-icon>
-                </button>
               </div>
 
               <div class="prompt-input-input-area">
@@ -198,11 +205,11 @@
                 </button>
                 <div class="spacer"></div>
                 <!-- 发送/终止按钮 -->
-                <button 
-                  v-if="!loading || !currentReplyId" 
-                  class="action-btn send-btn" 
-                  @click="sendMessage" 
-                  :disabled="(!inputMessage.trim() && !selectedFile) || loading"
+                <button
+                  v-if="!loading || !currentReplyId"
+                  class="action-btn send-btn"
+                  @click="sendMessage"
+                  :disabled="(!inputMessage.trim() && !selectedFiles.length) || loading"
                   title="发送消息"
                 >
                   <el-icon><Top /></el-icon>
@@ -227,6 +234,7 @@
       type="file"
       ref="fileInput"
       style="display: none"
+      multiple
       @change="onFileSelected"
     />
   </div>
@@ -239,7 +247,7 @@ import api from '@/api'
 import { useChatStore } from '@/stores/chat'
 import MarkdownViewer from '@/components/MarkdownViewer.vue'
 import PlanStepBar from '@/components/PlanStepBar.vue'
-import CoordinatorPlanCard from '@/components/CoordinatorPlanCard.vue'
+import TaskTreePanel from '@/components/TaskTreePanel.vue'
 import ToolCallCard from '@/components/ToolCallCard.vue'
 import { SSEParser } from '@/utils/sse-parser.js'
 
@@ -257,7 +265,7 @@ const inputMessage = ref('')
 // 当前正在执行的 reply_id，用于终止
 const currentReplyId = ref(null)
 
-const selectedFile = ref(null)
+const selectedFiles = ref([])
 const fileInput = ref(null)
 
 const inputTextarea = ref(null)
@@ -266,11 +274,8 @@ const messagesContainer = ref(null)
 
 const currentPlanData = ref(null)
 
-// Coordinator 计划相关状态
-const coordinatorPlan = ref(null)
-const activeCoordinatorPhase = ref(null)
-const completedCoordinatorPhases = ref([])
-const coordinatorPhaseOutputs = ref({})
+// TaskTreePanel 组件引用（替代旧的独立状态变量）
+const taskTreePanel = ref(null)
 
 const hasMessages = computed(() => messages.value.length > 0)
 
@@ -281,11 +286,8 @@ const isSending = ref(false)
 watch(currentConversationId, async (newId) => {
   if (isSending.value) return // 如果正在发送中，不触发自动加载，避免覆盖本地正在生成的流
 
-  // 重置 Coordinator 状态
-  coordinatorPlan.value = null
-  activeCoordinatorPhase.value = null
-  completedCoordinatorPhases.value = []
-  coordinatorPhaseOutputs.value = {}
+  // 重置 TaskTreePanel 状态
+  taskTreePanel.value?.reset()
 
   if (newId) {
     try {
@@ -308,12 +310,26 @@ watch(currentConversationId, async (newId) => {
         return baseMsg
       })
 
-      // 加载计划（如果存在）
+      // 恢复任务树状态：从消息历史中重播 coordinator_event 事件
+      for (const msg of messages.value) {
+        if (msg.role === 'assistant' && msg.events) {
+          for (const event of msg.events) {
+            if (event.type === 'coordinator_event') {
+              taskTreePanel.value?.handleCoordinatorEvent(event.event_type, event.data)
+            }
+          }
+        }
+      }
+
+      // 加载计划（如果存在，恢复到旧 phase 模式）
       if (planData) {
-        coordinatorPlan.value = planData.plan
-        activeCoordinatorPhase.value = planData.activePhase
-        completedCoordinatorPhases.value = planData.completedPhases || []
-        coordinatorPhaseOutputs.value = planData.phaseOutputs || {}
+        taskTreePanel.value?.handleCoordinatorEvent('plan_created', { plan: planData.plan })
+        if (planData.activePhase) {
+          taskTreePanel.value?.handleCoordinatorEvent('phase_started', { phase: planData.activePhase })
+        }
+        for (const p of planData.completedPhases || []) {
+          taskTreePanel.value?.handleCoordinatorEvent('phase_completed', { phase: p })
+        }
       }
 
       await nextTick()
@@ -352,83 +368,35 @@ const mergeAdjacentTextEvents = (events) => {
 }
 
 /**
- * Handle Coordinator events to update plan card UI
+ * Handle Coordinator events — delegates to TaskTreePanel component.
+ * Supports both legacy phase events and new task_tree_* events.
  */
 const handleCoordinatorEvent = (eventType, data) => {
   if (!eventType || !data) return
-
-  switch (eventType) {
-    case 'plan_created':
-      // 初始化计划数据
-      coordinatorPlan.value = data.plan || null
-      activeCoordinatorPhase.value = null
-      completedCoordinatorPhases.value = []
-      coordinatorPhaseOutputs.value = {}
-      break
-
-    case 'phase_started':
-      // 标记当前活动 phase
-      if (data.phase) {
-        activeCoordinatorPhase.value = data.phase
-      }
-      break
-
-    case 'phase_completed':
-      // 标记 phase 完成
-      if (data.phase) {
-        completedCoordinatorPhases.value.push(data.phase)
-        // 保存 phase 输出
-        if (data.output) {
-          coordinatorPhaseOutputs.value[data.phase] = data.output
-        }
-        // 如果完成的 phase 是当前活动的，清除活动状态
-        if (activeCoordinatorPhase.value === data.phase) {
-          activeCoordinatorPhase.value = null
-        }
-      }
-      break
-
-    case 'coordinator_initialized':
-      // Coordinator 初始化，重置状态
-      coordinatorPlan.value = null
-      activeCoordinatorPhase.value = null
-      completedCoordinatorPhases.value = []
-      coordinatorPhaseOutputs.value = {}
-      break
-
-    default:
-      break
-  }
+  taskTreePanel.value?.handleCoordinatorEvent(eventType, data)
 }
 
 // 发送消息
 const sendMessage = async () => {
-  if ((!inputMessage.value.trim() && !selectedFile.value) || loading.value) return
+  if ((!inputMessage.value.trim() && !selectedFiles.value.length) || loading.value) return
 
   isSending.value = true
   let userMessage = inputMessage.value.trim()
-  const hasFile = !!selectedFile.value
-  const currentFile = selectedFile.value
-
-  // 重置 Coordinator 状态
-  coordinatorPlan.value = null
-  activeCoordinatorPhase.value = null
-  completedCoordinatorPhases.value = []
-  coordinatorPhaseOutputs.value = {}
+  const currentFiles = [...selectedFiles.value]
 
   inputMessage.value = ''
-  selectedFile.value = null
+  selectedFiles.value = []
   resetTextareaHeight()
 
   try {
     // 处理文件上传
     let fileInfoString = ''
-    if (hasFile) {
+    if (currentFiles.length > 0) {
       // 如果没有会话ID，先创建一个，否则上传会失败
       if (!currentConversationId.value) {
         try {
           const newConv = await api.createConversation({
-            title: userMessage.substring(0, 50) || currentFile.name
+            title: userMessage.substring(0, 50) || currentFiles[0].name
           })
           currentConversationId.value = newConv.conversation_id
           await loadConversations()
@@ -438,14 +406,26 @@ const sendMessage = async () => {
         }
       }
 
-      try {
-        const uploadRes = await api.uploadChatFile(currentConversationId.value, currentFile)
-        if (uploadRes.success) {
-          fileInfoString = `\n\n[文件已上传: ${currentFile.name}]`
+      const uploadedNames = []
+      const failedNames = []
+      for (const file of currentFiles) {
+        try {
+          const uploadRes = await api.uploadChatFile(currentConversationId.value, file)
+          if (uploadRes.success) {
+            uploadedNames.push(file.name)
+          } else {
+            failedNames.push(file.name)
+          }
+        } catch (err) {
+          console.error(`文件上传失败: ${file.name}`, err)
+          failedNames.push(file.name)
         }
-      } catch (err) {
-        console.error('文件上传失败:', err)
-        fileInfoString = `\n\n[文件上传失败: ${currentFile.name}]`
+      }
+      if (uploadedNames.length > 0) {
+        fileInfoString += `\n\n[文件已上传: ${uploadedNames.join(', ')}]`
+      }
+      if (failedNames.length > 0) {
+        fileInfoString += `\n\n[文件上传失败: ${failedNames.join(', ')}]`
       }
     }
 
@@ -524,20 +504,26 @@ const sendMessage = async () => {
           // Also maintain flat content for DB compatibility
           msg.content = (msg.content || '') + parsed.content
         } else if (parsed.type === 'tool_call') {
-          msg.events.push({
-            type: 'tool_call',
-            id: parsed.id,
-            name: parsed.name,
-            input: parsed.input,
-          })
+          // 按 ID 去重，防止流式累积消息导致同一工具调用多次渲染
+          if (!parsed.id || !msg.events.some(e => e.type === 'tool_call' && e.id === parsed.id)) {
+            msg.events.push({
+              type: 'tool_call',
+              id: parsed.id,
+              name: parsed.name,
+              input: parsed.input,
+            })
+          }
         } else if (parsed.type === 'tool_result') {
-          msg.events.push({
-            type: 'tool_result',
-            id: parsed.id,
-            name: parsed.name,
-            output: parsed.output,
-            success: parsed.success,
-          })
+          // 按 ID 去重
+          if (!parsed.id || !msg.events.some(e => e.type === 'tool_result' && e.id === parsed.id)) {
+            msg.events.push({
+              type: 'tool_result',
+              id: parsed.id,
+              name: parsed.name,
+              output: parsed.output,
+              success: parsed.success,
+            })
+          }
         } else if (parsed.type === 'title_generated') {
           chatStore.updateConversationTitle(parsed.conversation_id, parsed.title)
         } else if (parsed.type === 'coordinator_event' && parsed.data) {
@@ -654,24 +640,23 @@ const triggerFileInput = () => {
 }
 
 const onFileSelected = (e) => {
-  const file = e.target.files[0]
-  if (file) {
-    // 在前端对文件重命名，添加时间戳
-    const timestamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0].replace('T', '_')
+  const files = Array.from(e.target.files)
+  const timestamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0].replace('T', '_')
+  const renamed = files.map(file => {
     const namePart = file.name.substring(0, file.name.lastIndexOf('.')) || file.name
     const extension = file.name.includes('.') ? file.name.substring(file.name.lastIndexOf('.')) : ''
     const newFileName = `${namePart}_${timestamp}${extension}`
-    
-    // 创建新的 File 对象
-    const renamedFile = new File([file], newFileName, { type: file.type })
-    selectedFile.value = renamedFile
-  }
+    return new File([file], newFileName, { type: file.type })
+  })
+  // 追加到已选文件列表（去重：同名文件以新选的为准）
+  const existing = selectedFiles.value.filter(f => !renamed.some(r => r.name === f.name))
+  selectedFiles.value = [...existing, ...renamed]
   // 清空 input 使得同一个文件可以重复触发 change
   e.target.value = ''
 }
 
-const cancelFile = () => {
-  selectedFile.value = null
+const cancelFile = (idx) => {
+  selectedFiles.value = selectedFiles.value.filter((_, i) => i !== idx)
 }
 
 // 键盘事件处理
@@ -996,32 +981,42 @@ onMounted(() => {
   }
 }
 
-/* 文件预览 Tab 样式 */
-.file-preview-tab {
+/* 文件预览区：多文件换行布局 */
+.file-preview-list {
   display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+/* 文件预览 Tab 样式：自适应宽度，超长文件名截断 */
+.file-preview-tab {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 6px;
   background: var(--main-bg);
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  padding: 6px 12px;
-  margin-bottom: 8px;
-  max-width: fit-content;
+  padding: 4px 8px 4px 10px;
+  max-width: 240px;
+  min-width: 0;
 }
 
 .file-info {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   color: var(--text-primary);
   font-size: 13px;
+  flex: 1;
+  min-width: 0;
 }
 
 .file-name {
-  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .cancel-file-btn {
@@ -1034,7 +1029,7 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   border-radius: 4px;
-  margin-left: 8px;
+  flex-shrink: 0;
   transition: background 0.2s;
 }
 

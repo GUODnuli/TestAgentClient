@@ -27,7 +27,7 @@ export const useUserStore = defineStore('user', () => {
       const response = await api.register(userData)
       return { success: true, user: response }
     } catch (err) {
-      const message = err.response?.data?.detail || '注册失败，请稍后重试'
+      const message = err.response?.data?.message || '注册失败，请稍后重试'
       error.value = message
       return { success: false, error: message }
     } finally {
@@ -39,18 +39,18 @@ export const useUserStore = defineStore('user', () => {
   const login = async (credentials) => {
     loading.value = true
     error.value = null
-    
+
     try {
       const response = await api.login(credentials)
-      
+
       // 保存 Token 和用户信息
       setToken(response.access_token)
       setStoredUser(response.user)
       user.value = response.user
-      
+
       return { success: true, user: response.user }
     } catch (err) {
-      const message = err.response?.data?.detail || '登录失败，请检查用户名和密码'
+      const message = err.response?.data?.message || '登录失败，请检查用户名和密码'
       error.value = message
       return { success: false, error: message }
     } finally {
@@ -110,7 +110,7 @@ export const useUserStore = defineStore('user', () => {
       user.value = null
       return { success: true }
     } catch (err) {
-      const message = err.response?.data?.detail || '修改密码失败'
+      const message = err.response?.data?.message || '修改密码失败'
       error.value = message
       return { success: false, error: message }
     } finally {
@@ -122,14 +122,14 @@ export const useUserStore = defineStore('user', () => {
   const updateProfile = async (profileData) => {
     loading.value = true
     error.value = null
-    
+
     try {
       const response = await api.updateProfile(profileData)
       setStoredUser(response)
       user.value = response
       return { success: true, user: response }
     } catch (err) {
-      const message = err.response?.data?.detail || '更新资料失败'
+      const message = err.response?.data?.message || '更新资料失败'
       error.value = message
       return { success: false, error: message }
     } finally {

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { authenticate } from '../../plugins/auth.js';
 import { chatMessageSchema, interruptSchema } from './chat.schemas.js';
 import * as chatService from './chat.service.js';
+import * as conversationService from '../conversation/conversation.service.js';
 import { streamSSE } from './sse.handler.js';
 import { getLogger } from '../../config/logger.js';
 import path from 'path';
@@ -140,6 +141,88 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
         return { success: true, message: 'Agent 已终止' };
       }
       return { success: false, message: '未找到对应的 Agent 或终止失败' };
+    }
+  );
+
+  // GET /api/conversations/:id/outputs — list output files for a conversation
+  app.get(
+    '/api/conversations/:id/outputs',
+    { preHandler: [authenticate] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const userId = request.currentUser!.user_id;
+      const { id: convId } = request.params as { id: string };
+      const outputDir = process.env.AGENT_OUTPUT_DIR ?? '';
+
+      if (!outputDir) {
+        return { success: true, data: [] };
+      }
+
+      const dir = path.join(outputDir, userId, convId);
+      if (!fs.existsSync(dir)) {
+        return { success: true, data: [] };
+      }
+
+      const files = fs.readdirSync(dir)
+        .filter(name => {
+          const stat = fs.statSync(path.join(dir, name));
+          return stat.isFile();
+        })
+        .map(name => {
+          const stat = fs.statSync(path.join(dir, name));
+          return { name, size: stat.size, mtime: stat.mtimeMs };
+        });
+
+      return { success: true, data: files };
+    }
+  );
+
+  // GET /api/conversations/:id/outputs/:filename — download a specific output file
+  app.get(
+    '/api/conversations/:id/outputs/:filename',
+    { preHandler: [authenticate] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const userId = request.currentUser!.user_id;
+      const { id: convId, filename } = request.params as { id: string; filename: string };
+      const outputDir = process.env.AGENT_OUTPUT_DIR ?? '';
+
+      if (!outputDir) {
+        return reply.code(404).send({ error: 'Output directory not configured' });
+      }
+
+      const baseDir = path.resolve(path.join(outputDir, userId, convId));
+      const filePath = path.resolve(path.join(baseDir, filename));
+
+      // Path security: ensure resolved path is within the user's conversation directory
+      if (!filePath.startsWith(baseDir + path.sep) && filePath !== baseDir) {
+        return reply.code(403).send({ error: 'Forbidden' });
+      }
+
+      if (!fs.existsSync(filePath)) {
+        return reply.code(404).send({ error: 'Not found' });
+      }
+
+      const stat = fs.statSync(filePath);
+      if (!stat.isFile()) {
+        return reply.code(404).send({ error: 'Not found' });
+      }
+
+      const safeFilename = path.basename(filePath);
+      reply.header('Content-Disposition', `attachment; filename="${safeFilename}"`);
+      reply.header('Content-Type', 'application/octet-stream');
+      reply.header('Content-Length', stat.size);
+
+      const stream = fs.createReadStream(filePath);
+      return reply.send(stream);
+    }
+  );
+
+  // GET /api/conversations/:id/task-tree — replay task tree events from message metadata
+  app.get(
+    '/api/conversations/:id/task-tree',
+    { preHandler: [authenticate] },
+    async (request: FastifyRequest, _reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      return conversationService.getTaskTreeSnapshot(id, request.currentUser!.user_id);
     }
   );
 }

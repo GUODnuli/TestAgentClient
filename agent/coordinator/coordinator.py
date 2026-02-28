@@ -80,6 +80,10 @@ class CoordinatorConfig:
     gam_max_iterations: int = 3
     gam_min_confidence: float = 0.7
 
+    # Orchestrator 配置
+    use_orchestrator: bool = True   # True = 使用 OrchestratorAgent（动态规划）
+                                    # False = 使用旧 TaskPlanner 流程（向后兼容）
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -97,6 +101,7 @@ class CoordinatorConfig:
             "gam_model": self.gam_model,
             "gam_max_iterations": self.gam_max_iterations,
             "gam_min_confidence": self.gam_min_confidence,
+            "use_orchestrator": self.use_orchestrator,
         }
 
 
@@ -180,6 +185,15 @@ class Coordinator:
         self._message_queue: Optional[asyncio.Queue] = None
         self._message_consumer_task: Optional[asyncio.Task] = None
 
+        # 工具调用去重集合（跨 Phase/Worker 有效，防止流式模式下同一 tool_id 多次触发）
+        self._seen_tool_call_ids: set = set()
+        self._seen_tool_result_ids: set = set()
+
+        # 文本去重：AgentScope 流式模式每次发送「全量累积文本」而非 delta，
+        # 需要在此计算 delta，避免前端收到重复内容。
+        # key: worker_name, value: 上一次已发送的累积文本
+        self._last_emitted_text: Dict[str, str] = {}
+
         # 记忆系统
         self._memory_manager: Optional["MemoryManager"] = None
         if self.config.memory_enabled and MemoryManager is not None:
@@ -253,6 +267,11 @@ class Coordinator:
 
         self._cancelled = False
 
+        # 重置工具调用去重集合和文本累积跟踪
+        self._seen_tool_call_ids = set()
+        self._seen_tool_result_ids = set()
+        self._last_emitted_text = {}
+
         # 初始化消息队列并启动消费者
         self._message_queue = asyncio.Queue()
         self._message_consumer_task = asyncio.create_task(
@@ -266,40 +285,49 @@ class Coordinator:
         })
 
         try:
-            # 阶段 1: 任务分解
-            plan = await self._plan_task(objective, context, loop_context=loop_context)
-            self._state.plan = plan
-
-            self._emit_progress("plan_created", {
-                "task_id": self._state.task_id,
-                "phases": len(plan.phases),
-                "plan": plan.to_dict(),
-            })
-
-            # 阶段 2: 执行计划
-            result = await self._execute_plan(plan)
-
-            # 阶段 3: 判断完成
-            if self._is_task_complete(result):
-                self._state.status = "completed"
+            if self.config.use_orchestrator:
+                # 新路径：OrchestratorAgent 全权负责
+                coord_result = await self._run_orchestrator(objective, context, loop_context)
+                self._emit_progress("task_completed", {
+                    "task_id": self._state.task_id,
+                    "status": coord_result.get("status", "completed"),
+                })
+                return coord_result
             else:
-                # 可能需要生成补充计划
-                supplementary_result = await self._handle_incomplete(result)
-                if supplementary_result:
-                    result = self._merge_results(result, supplementary_result)
+                # 旧路径：TaskPlanner + PhaseScheduler（向后兼容）
+                plan = await self._plan_task(objective, context, loop_context=loop_context)
+                self._state.plan = plan
 
-            self._emit_progress("task_completed", {
-                "task_id": self._state.task_id,
-                "status": self._state.status,
-            })
+                self._emit_progress("plan_created", {
+                    "task_id": self._state.task_id,
+                    "phases": len(plan.phases),
+                    "plan": plan.to_dict(),
+                })
 
-            return {
-                "task_id": self._state.task_id,
-                "status": self._state.status,
-                "objective": objective,
-                "result": result,
-                "phase_results": [pr.to_dict() for pr in self._state.phase_results],
-            }
+                # 阶段 2: 执行计划
+                result = await self._execute_plan(plan)
+
+                # 阶段 3: 判断完成
+                if self._is_task_complete(result):
+                    self._state.status = "completed"
+                else:
+                    # 可能需要生成补充计划
+                    supplementary_result = await self._handle_incomplete(result)
+                    if supplementary_result:
+                        result = self._merge_results(result, supplementary_result)
+
+                self._emit_progress("task_completed", {
+                    "task_id": self._state.task_id,
+                    "status": self._state.status,
+                })
+
+                return {
+                    "task_id": self._state.task_id,
+                    "status": self._state.status,
+                    "objective": objective,
+                    "result": result,
+                    "phase_results": [pr.to_dict() for pr in self._state.phase_results],
+                }
 
         except asyncio.CancelledError:
             self._state.status = "cancelled"
@@ -375,39 +403,74 @@ class Coordinator:
 
                         if block_type == "text":
                             # 文本内容
+                            # AgentScope 流式模式每次发送「全量累积文本」而非 delta，
+                            # 需要计算 delta 再发送，避免前端重复拼接导致复读。
                             text_content = block.get("text", "")
                             if text_content:
-                                self._emit_progress("worker_text", {
-                                    "task_id": self._state.task_id if self._state else "",
-                                    "worker": worker_name,
-                                    "content": text_content,
-                                    "is_last_chunk": is_last,
-                                })
+                                prev = self._last_emitted_text.get(worker_name, "")
+                                if text_content.startswith(prev):
+                                    # 正常流式累积：只发送新增部分
+                                    delta = text_content[len(prev):]
+                                else:
+                                    # 新的文本块（tool call 之后重新开始）：全量发送
+                                    delta = text_content
+                                self._last_emitted_text[worker_name] = text_content
+                                if delta:
+                                    self._emit_progress("worker_text", {
+                                        "task_id": self._state.task_id if self._state else "",
+                                        "worker": worker_name,
+                                        "content": delta,
+                                        "is_last_chunk": is_last,
+                                    })
+                                if is_last:
+                                    # 流结束，清除该 worker 的累积记录
+                                    self._last_emitted_text.pop(worker_name, None)
 
                         elif block_type == "thinking":
-                            # 思考过程
+                            # 思考过程（同样需要 delta 处理，AgentScope 也是全量累积）
                             thinking_content = block.get("thinking", "")
                             if thinking_content:
-                                self._emit_progress("worker_thinking", {
-                                    "task_id": self._state.task_id if self._state else "",
-                                    "worker": worker_name,
-                                    "content": thinking_content,
-                                    "is_last_chunk": is_last,
-                                })
+                                think_key = f"__thinking__{worker_name}"
+                                prev_think = self._last_emitted_text.get(think_key, "")
+                                if thinking_content.startswith(prev_think):
+                                    think_delta = thinking_content[len(prev_think):]
+                                else:
+                                    think_delta = thinking_content
+                                self._last_emitted_text[think_key] = thinking_content
+                                if think_delta:
+                                    self._emit_progress("worker_thinking", {
+                                        "task_id": self._state.task_id if self._state else "",
+                                        "worker": worker_name,
+                                        "content": think_delta,
+                                        "is_last_chunk": is_last,
+                                    })
+                                if is_last:
+                                    self._last_emitted_text.pop(think_key, None)
 
                         elif block_type == "tool_use":
-                            # 工具调用
+                            # 工具调用（按 tool_id 去重，避免流式模式下同一 block 被多次触发）
+                            tool_id = block.get("id", "")
+                            if tool_id and tool_id in self._seen_tool_call_ids:
+                                continue  # 跳过已发送的工具调用
+                            if tool_id:
+                                self._seen_tool_call_ids.add(tool_id)
                             self._emit_progress("worker_tool_call", {
                                 "task_id": self._state.task_id if self._state else "",
                                 "worker": worker_name,
-                                "id": block.get("id", ""),
+                                "id": tool_id,
                                 "name": block.get("name", ""),
                                 "input": block.get("input", {}),
                             })
 
                         elif block_type == "tool_result":
-                            # 工具执行结果
-                            output = block.get("output", "")
+                            # 工具执行结果（按 tool_id 去重）
+                            result_id = block.get("tool_use_id", "") or block.get("id", "")
+                            if result_id and result_id in self._seen_tool_result_ids:
+                                continue  # 跳过已发送的工具结果
+                            if result_id:
+                                self._seen_tool_result_ids.add(result_id)
+
+                            output = block.get("content", block.get("output", ""))
                             # output 可能是列表或字符串
                             if isinstance(output, list):
                                 output_str = "\n".join(
@@ -420,10 +483,10 @@ class Coordinator:
                             self._emit_progress("worker_tool_result", {
                                 "task_id": self._state.task_id if self._state else "",
                                 "worker": worker_name,
-                                "id": block.get("id", ""),
+                                "id": result_id,
                                 "name": block.get("name", ""),
                                 "output": output_str,
-                                "success": True,  # AgentScope 默认成功，失败会有错误消息
+                                "success": not block.get("is_error", False),
                             })
 
             except asyncio.TimeoutError:
@@ -488,6 +551,58 @@ class Coordinator:
         })
 
         return plan
+
+    async def _run_orchestrator(
+        self,
+        objective: str,
+        context: Optional[Dict[str, Any]],
+        loop_context: Optional[Any],
+    ) -> Dict[str, Any]:
+        """
+        新路径：使用 OrchestratorAgent 全权规划 + 执行。
+
+        Args:
+            objective: 任务目标
+            context: 上下文
+            loop_context: AgentLoop 多轮上下文
+
+        Returns:
+            标准 Coordinator 结果 dict，兼容 AgentLoop._extract_summary
+        """
+        try:
+            from orchestrator.orchestrator_agent import OrchestratorAgent
+        except ImportError:
+            from ..orchestrator.orchestrator_agent import OrchestratorAgent
+
+        prompts_dir = Path(self.config.prompts_dir).parent / "orchestrator"
+
+        orch = OrchestratorAgent(
+            model=self.model,
+            toolkit=self.toolkit,
+            workers=self._workers,
+            skills=self._skills,
+            progress_callback=self.progress_callback,
+            message_queue=self._message_queue,
+            prompts_dir=prompts_dir,
+        )
+
+        orch_result = await orch.run(objective, context, loop_context)
+
+        # 将 orchestrator 结果转换为标准 Coordinator 结果格式
+        has_gaps = bool(orch_result.get("remaining_gaps"))
+        status = "partial" if has_gaps else "completed"
+        self._state.status = status
+
+        # 将 task_manager 任务树转为 phase_results 供 GoalEvaluator 使用
+        phase_results = orch.task_manager._task_manager_to_phase_results()
+
+        return {
+            "task_id": self._state.task_id,
+            "status": status,
+            "objective": objective,
+            "result": orch_result,
+            "phase_results": phase_results,
+        }
 
     async def _execute_plan(self, plan: ExecutionPlan) -> Dict[str, Any]:
         """

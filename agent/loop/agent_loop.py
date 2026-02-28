@@ -188,8 +188,9 @@ class AgentLoop:
                 worker_output = wr.get("output", "")
                 task_desc = wr.get("task_description", "")
 
-                if worker_status == "success":
-                    label = task_desc or f"{phase_name} / {worker_name}"
+                # Accept both "success" (legacy phase format) and "completed" (task-tree format)
+                if worker_status in ("success", "completed"):
+                    label = task_desc or phase_name or worker_name
                     completed_tasks.append(label)
                     # Store truncated output as artifact
                     if worker_output:

@@ -170,7 +170,9 @@ export async function updatePlanStatus(
   const logger = getLogger();
 
   try {
-    await prisma.coordinatorPlan.update({
+    // Use updateMany so it silently no-ops when no plan record exists
+    // (orchestrator path doesn't emit plan_created, so no record may exist)
+    await prisma.coordinatorPlan.updateMany({
       where: { conversationId },
       data: { status },
     });
