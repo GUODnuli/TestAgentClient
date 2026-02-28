@@ -26,7 +26,6 @@ allowed_tools:
   - connect_database
   - query_table_structure
   - execute_sql
-  - send_request
 tags: [code-analysis, branch-testing, java, spring, mybatis, coverage, coordinator-workers]
 ---
 
@@ -52,7 +51,7 @@ Phase 2: [CallTracer]   → get_call_chain(entry_fqn, depth=5)
 Phase 3: [BranchAnalyzer]→ read_method_source, identify IF/SWITCH conditions
 Phase 4: [SQLGenerator]  → query_table_structure, generate SQL
 Phase 5: [RequestBuilder]→ assemble JSON request messages
-Phase 6: [TestExecutor]  → execute SQL → send_request → verify
+Phase 6: [TestExecutor]  → execute SQL → http_request (http_client_tools) → verify
 Phase 7: [ReportGenerator]→ aggregate and generate report
 ```
 
@@ -113,7 +112,9 @@ Phase 7: [ReportGenerator]→ aggregate and generate report
 ### TestExecutor Worker
 **Goal**: Execute complete test flow
 
-**Tools**: `execute_sql` → `send_request` → validate response
+**Tools**: `execute_sql` → `http_request` (from http_client_tools) → validate response
+
+**Setup**: Call `http_configure(base_url=..., headers=...)` once before test loop; session preserves cookies/auth across requests.
 
 **Validation**: Status code 200, response code "SUCCESS", database state matches expectation
 

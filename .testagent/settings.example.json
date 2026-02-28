@@ -7,6 +7,13 @@
       "enabled": true,
       "group": "document_tools",
       "displayName": "文档加载器"
+    },
+    "http_client": {
+      "command": "uvx",
+      "args": ["requests-http-mcp@latest"],
+      "enabled": true,
+      "group": "http_client_tools",
+      "displayName": "HTTP 客户端"
     }
   },
   "toolDisplay": {
@@ -28,7 +35,11 @@
       "capture_metrics": "采集性能指标",
       "generate_test_report": "生成测试报告",
       "diagnose_failures": "诊断失败原因",
-      "suggest_improvements": "生成改进建议"
+      "suggest_improvements": "生成改进建议",
+      "http_configure": "配置 HTTP Session",
+      "http_request": "发送 HTTP 请求",
+      "http_get_state": "查看 Session 状态",
+      "http_clear_session": "清空 Session"
     },
     "hidden": ["reset_equipped_tools", "equip_tool_group"]
   },

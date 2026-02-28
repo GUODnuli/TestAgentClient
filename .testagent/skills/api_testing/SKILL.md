@@ -4,10 +4,12 @@ description: >
   Specialized in API testing and quality assurance. Parses API documentation
   (OpenAPI/Swagger, Postman, HAR, Word) to extract interface specifications,
   generates comprehensive test cases (positive, negative, boundary, security),
-  executes API tests, and produces test reports with failure diagnosis.
+  executes API tests via the http_client_tools MCP tool group, and produces
+  test reports with failure diagnosis.
   Use this skill when users ask about API testing, test case generation,
   test execution, or test report analysis.
-version: 1.0.0
+  HTTP execution is provided by http_client_tools (http_configure / http_request).
+version: 1.1.0
 tools_dir: tools
 allowed_tools:
   - extract_api_spec
@@ -16,7 +18,6 @@ allowed_tools:
   - generate_negative_cases
   - generate_security_cases
   - apply_business_rules
-  - execute_api_test
   - validate_response
   - capture_metrics
   - generate_test_report
@@ -45,7 +46,12 @@ End-to-end API testing: document parsing → spec extraction → test case gener
    - `generate_positive_cases` — Normal input, typical business scenarios
    - `generate_negative_cases` — Illegal input, missing parameters, type errors
    - `generate_security_cases` — SQL injection, XSS, authorization bypass
-4. **Execute Tests**: `execute_api_test` → `validate_response` → `capture_metrics`
+4. **Execute Tests** (via http_client_tools):
+   - `reset_equipped_tools({"http_client_tools": true})` — Activate HTTP tool group
+   - `http_configure(base_url="http://...", headers={...})` — Configure session once
+   - `http_request(method, path, body, params)` — Send each test request (session preserves cookies/auth)
+   - `validate_response(response_json, assertions_json)` — Assert on the response
+   - `capture_metrics(results_json)` — Aggregate performance statistics
 5. **Report & Diagnose**: `generate_test_report` → `diagnose_failures` → `suggest_improvements`
 
 ## Interface Specification Schema
