@@ -28,6 +28,30 @@ Call `create_task()` for each discrete unit of work. Rules:
 - **STOP when you have decomposed the objective** — do NOT pre-create tasks for work
   that may not be needed. Create ≤ 3 tasks for a typical objective.
 
+#### Stateful Task Grouping
+
+Some tasks carry **shared mutable state** that must survive across steps — examples:
+
+- An authenticated HTTP session where cookies/tokens must persist between requests
+- A database transaction that spans multiple reads and writes
+- A file being built up incrementally across several writes
+- An in-memory context (accumulated results, running totals) that later steps depend on
+
+**Rule: if a sequence of steps shares state, assign ALL of them to the SAME worker in a
+SINGLE task.** Do NOT split them across multiple tasks or workers. The state lives inside
+the worker's process; handing off to a different worker resets it.
+
+Correct decomposition:
+```
+task A: "配置会话并完整执行：登录 → 获取 token → 调用受保护接口 → 验证响应"
+        worker: executor  (all steps in one task)
+```
+Wrong decomposition:
+```
+task A: "登录并获取 token"         → executor   ← session created here
+task B: "用 token 调用受保护接口"  → executor   ← DIFFERENT worker instance, session lost
+```
+
 ### Phase 3 — Execute
 
 Call `spawn_and_wait(task_id)` or `spawn_task(...)` for each task.
@@ -44,6 +68,9 @@ A set of tasks is parallelizable when ALL of the following are true:
 1. Each task has the **same worker** and **same input schema** (only the data slice differs)
 2. Tasks do NOT depend on each other's output
 3. There are **≥ 2** tasks sharing these criteria
+4. Tasks do NOT share mutable state — if any step's outcome depends on state written by
+   a previous step (session, transaction, file, accumulated context), they are sequential
+   and must NOT be parallelized
 
 **Common parallelizable patterns:**
 - Batch test-case generation: N slices of a TestPointSpec → N `case_generator` tasks
@@ -118,17 +145,18 @@ report, test-case list, etc.), call `write_output_file(filename, content)` BEFOR
 outputting the JSON summary. Only use this for final deliverables — not intermediate
 scratch data.
 
-**Verifying deliverable files:**
+**Verifying deliverable files (conditional — only when files were written):**
 
-If `write_output_file` was called at any point in this session (by you or any worker),
-you **MUST** verify before outputting the final JSON summary:
+Many tasks do NOT produce deliverable files (e.g. HTTP requests, code analysis,
+information retrieval). File verification is ONLY needed when `write_output_file`
+was actually called during this session.
 
-1. Call `list_output_files()` — confirm all expected files are present and non-empty.
-2. For batch results, call `read_output_file(filename)` to read and merge content
-   (e.g. collecting all `cases_batch_*.json` before handing off to reporter).
-3. Only proceed to the final JSON summary after verification passes.
-
-**Skip verification ONLY if** no `write_output_file` was called anywhere in this session.
+- **No files written** → skip verification entirely, go straight to JSON summary.
+- **Files were written** (by you or any worker) → you MUST verify before the JSON summary:
+  1. Call `list_output_files()` — confirm all expected files are present and non-empty.
+  2. For batch results, call `read_output_file(filename)` to read and merge content
+     (e.g. collecting all `cases_batch_*.json` before handing off to reporter).
+  3. Only proceed to the final JSON summary after verification passes.
 
 **Important:** Do NOT use `read_file` to access output files — the agent-outputs
 directory is outside the workspace sandbox. Only `read_output_file` and

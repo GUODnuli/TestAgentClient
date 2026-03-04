@@ -171,26 +171,40 @@ class ReactModeExecutor:
 
     def _filter_toolkit(self) -> Toolkit:
         """
-        根据配置过滤工具集
+        创建 toolkit 的浅拷贝，仅保留 config.tools 列表中的工具。
 
-        只保留配置中允许的工具。
+        不重建 Toolkit 实例，避免 MCP 工具 original_func 同名冲突。
+        通过独立化 tools/groups dict 实现过滤 + 按需激活，
+        不影响原始共享 toolkit。
 
         Returns:
             过滤后的工具集
         """
         if not self.config.tools:
-            # 如果没有指定工具，返回完整工具集
             return self.toolkit
 
-        # 创建新的工具集，只包含允许的工具
-        filtered = Toolkit()
-        allowed_tools = set(self.config.tools)
+        allowed = set(self.config.tools)
 
-        for tool_name in self.toolkit.get_tool_names():
-            if tool_name in allowed_tools:
-                tool_func = self.toolkit.get_tool(tool_name)
-                if tool_func:
-                    filtered.register_tool_function(tool_func)
+        # 浅拷贝：共享 MCP client 等内部引用，独立化 tools/groups
+        filtered = object.__new__(type(self.toolkit))
+        filtered.__dict__.update(self.toolkit.__dict__)
+
+        # 独立化 tools dict：只保留允许的工具
+        filtered.tools = {
+            name: tf for name, tf in self.toolkit.tools.items()
+            if name in allowed
+        }
+
+        # 独立化 groups dict：激活包含已保留工具的组
+        from dataclasses import replace
+        needed_groups = {
+            tf.group for tf in filtered.tools.values()
+            if tf.group != "basic"
+        }
+        filtered.groups = {
+            name: replace(g, active=(name in needed_groups))
+            for name, g in self.toolkit.groups.items()
+        }
 
         return filtered
 

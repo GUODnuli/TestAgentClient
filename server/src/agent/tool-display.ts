@@ -43,7 +43,6 @@ const DEFAULT_DISPLAY_NAMES: Record<string, string> = {
   generate_negative_cases: '生成异常用例',
   generate_security_cases: '生成安全用例',
   apply_business_rules: '应用业务规则',
-  execute_api_test: '执行接口测试',
   validate_response: '校验响应结果',
   capture_metrics: '采集性能指标',
   generate_test_report: '生成测试报告',

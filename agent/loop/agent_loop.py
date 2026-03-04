@@ -198,13 +198,27 @@ class AgentLoop:
                         out_str = str(worker_output)
                         artifacts[artifact_key] = out_str[:500] if len(out_str) > 500 else out_str
 
-        # Map coordinator status to loop status
-        if status == "completed":
-            loop_status = "success"
-        elif status == "failed":
-            loop_status = "failed"
+        # Fallback: OrchestratorAgent result format (no phase_results key).
+        # Without this, GoalEvaluator sees empty completed_tasks, evaluates
+        # achieved=False, and triggers a spurious second iteration.
+        if not completed_tasks and not phase_results:
+            direct_tasks = coordinator_result.get("completed_tasks", [])
+            completed_tasks = [str(t)[:120] for t in direct_tasks]
+            orch_status = coordinator_result.get("status", "")
+            if completed_tasks or orch_status in ("completed", "success"):
+                loop_status = "success"
+            elif orch_status == "failed":
+                loop_status = "failed"
+            else:
+                loop_status = "partial"
         else:
-            loop_status = "partial"
+            # Map coordinator status to loop status (legacy path)
+            if status == "completed":
+                loop_status = "success"
+            elif status == "failed":
+                loop_status = "failed"
+            else:
+                loop_status = "partial"
 
         return LoopIterationSummary(
             iteration=iteration,

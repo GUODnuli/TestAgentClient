@@ -198,6 +198,42 @@ class WorkerRunner:
         self._cancelled = False
         self._current_task: Optional[WorkerTask] = None
 
+    def _filter_toolkit(self, toolkit: Toolkit) -> Toolkit:
+        """
+        创建 toolkit 的浅拷贝，仅保留 config.tools 列表中的工具。
+
+        不重建 Toolkit 实例，避免 MCP 工具 original_func 同名冲突。
+        通过独立化 tools/groups dict 实现过滤 + 按需激活，
+        不影响原始共享 toolkit。
+        """
+        if not self.config.tools:
+            return toolkit
+
+        allowed = set(self.config.tools)
+
+        # 浅拷贝：共享 MCP client 等内部引用，独立化 tools/groups
+        filtered = object.__new__(type(toolkit))
+        filtered.__dict__.update(toolkit.__dict__)
+
+        # 独立化 tools dict：只保留允许的工具
+        filtered.tools = {
+            name: tf for name, tf in toolkit.tools.items()
+            if name in allowed
+        }
+
+        # 独立化 groups dict：激活包含已保留工具的组
+        from dataclasses import replace
+        needed_groups = {
+            tf.group for tf in filtered.tools.values()
+            if tf.group != "basic"
+        }
+        filtered.groups = {
+            name: replace(g, active=(name in needed_groups))
+            for name, g in toolkit.groups.items()
+        }
+
+        return filtered
+
     def _build_toolkit_with_subtask_tools(self, base_toolkit: Toolkit, task_manager: Any) -> Toolkit:
         """
         向 toolkit 注入 spawn_task 工具，使 Worker 可以主动派发子任务。
@@ -348,13 +384,13 @@ class WorkerRunner:
                 # 默认使用 dashscope formatter
                 formatter = get_formatter('dashscope')
 
-        # 创建 ReActAgent
+        # 创建 ReActAgent（使用过滤后的工具集，避免传入过多无关工具撑爆 context）
         agent = ReActAgent(
             name=f"Worker_{config.name}",
             sys_prompt=config.system_prompt,
             model=self.model,
             formatter=formatter,
-            toolkit=self.toolkit,
+            toolkit=self._filter_toolkit(self.toolkit),
             memory=InMemoryMemory(),
             max_iters=config.max_iterations,
         )

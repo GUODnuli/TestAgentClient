@@ -121,7 +121,7 @@ After extracting API specifications:
             description="Tools for executing API tests, validating responses, and capturing performance metrics.",
             notes="""# Test Execution Guidelines
 After generating test cases:
-1. Use `execute_api_test` to run test cases against target APIs
+1. Use `http_request` to run test cases against target APIs
 2. Use `validate_response` to verify response correctness (status, schema, data)
 3. Use `capture_metrics` to collect performance metrics (latency, throughput)
 
@@ -140,7 +140,6 @@ After generating test cases:
 - Capture detailed metrics for performance analysis
 - Report clear failure reasons with context""",
             tools=[
-                test_executor.get("execute_api_test"),
                 test_executor.get("validate_response"),
                 test_executor.get("capture_metrics"),
             ],

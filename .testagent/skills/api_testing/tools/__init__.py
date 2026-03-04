@@ -17,7 +17,7 @@ from .case_generator import (
     generate_negative_cases,
     generate_security_cases
 )
-from .test_executor import execute_api_test, validate_response, capture_metrics
+from .test_executor import validate_response, capture_metrics
 from .report_tools import generate_test_report, diagnose_failures, suggest_improvements
 
 __all__ = [
@@ -29,7 +29,6 @@ __all__ = [
     "generate_negative_cases",
     "generate_security_cases",
     # Test Executor
-    "execute_api_test",
     "validate_response",
     "capture_metrics",
     # Report Tools

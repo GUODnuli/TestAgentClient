@@ -333,7 +333,7 @@ watch(currentConversationId, async (newId) => {
       }
 
       await nextTick()
-      scrollToBottom()
+      scrollToBottom(true)
     } catch (error) {
       console.error('加载对话消息失败:', error)
     }
@@ -438,7 +438,7 @@ const sendMessage = async () => {
     })
 
     await nextTick()
-    scrollToBottom()
+    scrollToBottom(true)
 
     loading.value = true
 
@@ -667,10 +667,17 @@ const handleKeydown = (e) => {
   }
 }
 
-// 滚动到底部
-const scrollToBottom = () => {
-  if (messagesContainer.value) {
+// 滚动到底部（智能模式：用户上滚查看历史时不强制拉回）
+const scrollToBottom = (force = false) => {
+  if (!messagesContainer.value) return
+  if (force) {
     messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+    return
+  }
+  const el = messagesContainer.value
+  const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  if (distanceFromBottom <= 80) {
+    el.scrollTop = el.scrollHeight
   }
 }
 

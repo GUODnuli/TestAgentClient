@@ -11,7 +11,6 @@ import json
 import logging
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -130,11 +129,12 @@ class TaskManager:
                     task_id, description[:60], worker_name, depth)
         return task_id
 
-    def spawn_and_wait(self, task_id: str, timeout: Optional[int] = None) -> str:
+    async def spawn_and_wait(self, task_id: str, timeout: Optional[int] = None) -> str:
         """
-        同步执行已注册的任务，等待完成。
+        异步执行已注册的任务，等待完成。
 
-        在独立线程 + 独立 event loop 中运行 Worker，避免 asyncio 嵌套运行问题。
+        在当前 event loop 中运行 Worker（与 MCP client 共享同一 event loop），
+        避免跨 event loop 导致 MCP 工具调用挂起。
 
         Returns:
             Worker 的输出文本（失败时返回 "ERROR: ..." 字符串）
@@ -186,8 +186,8 @@ class TaskManager:
         )
 
         async def _run_worker():
-            # 当前线程为 Worker 子线程，抑制 hook 向前端推送流式输出。
-            # Orchestrator 主线程不受影响（threading.local 线程隔离）。
+            # 抑制 Worker 的 hook 推送（避免 Worker 输出覆盖 Orchestrator 的流式输出）
+            # 同线程执行，需要 save/restore _suppress 状态
             try:
                 from hook import _suppress
             except ImportError:
@@ -195,45 +195,72 @@ class TaskManager:
                     from agent.hook import _suppress
                 except ImportError:
                     _suppress = None
+
+            old_suppress = getattr(_suppress, 'push', False) if _suppress else False
             if _suppress is not None:
                 _suppress.push = True
 
-            # 延迟导入避免循环依赖
             try:
-                from worker.worker_runner import WorkerRunner, WorkerTask
-            except ImportError:
-                from worker_runner import WorkerRunner, WorkerTask
+                # 延迟导入避免循环依赖
+                try:
+                    from worker.worker_runner import WorkerRunner, WorkerTask
+                except ImportError:
+                    from worker_runner import WorkerRunner, WorkerTask
 
-            runner = WorkerRunner(
-                config=worker_config,
-                model=self._model,
-                toolkit=self._toolkit,
-                progress_callback=self._progress_callback,
-                message_queue=self._message_queue,
-                task_manager=child_task_manager,
-            )
+                runner = WorkerRunner(
+                    config=worker_config,
+                    model=self._model,
+                    toolkit=self._toolkit,
+                    progress_callback=self._progress_callback,
+                    message_queue=self._message_queue,
+                    task_manager=child_task_manager,
+                )
 
-            task = WorkerTask(
-                session_id=None,
-                worker_name=node.worker_name,
-                task_description=node.description,
-                input_data=node.input_data,
-                context={
-                    "orchestrator_task_id": task_id,
-                    "depth": node.depth,
-                },
-            )
+                task = WorkerTask(
+                    session_id=None,
+                    worker_name=node.worker_name,
+                    task_description=node.description,
+                    input_data=node.input_data,
+                    context={
+                        "orchestrator_task_id": task_id,
+                        "depth": node.depth,
+                    },
+                )
 
-            result = await runner.run(task)
-            return result
+                result = await runner.run(task)
+                return result
+            finally:
+                if _suppress is not None:
+                    _suppress.push = old_suppress
 
-        # 在独立线程+独立 event loop 中运行，避免嵌套 asyncio.run 问题
         effective_timeout = timeout or 1800
 
         try:
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, _run_worker())
-                worker_result = future.result(timeout=effective_timeout)
+            worker_result = await asyncio.wait_for(
+                _run_worker(),
+                timeout=effective_timeout,
+            )
+
+            # 检查 Worker 执行状态
+            if worker_result.status not in ("success", "partial") and hasattr(worker_result.status, 'value'):
+                status_val = worker_result.status.value
+            else:
+                status_val = str(worker_result.status)
+
+            is_failed = status_val in ("failed", "timeout", "cancelled")
+
+            if is_failed:
+                error_msg = worker_result.error or f"Worker failed with status: {status_val}"
+                node.status = "failed"
+                node.error = error_msg
+                node.completed_at = time.time()
+                self._emit("task_tree_node_failed", {
+                    "task_id": task_id,
+                    "status": "failed",
+                    "error": error_msg,
+                })
+                logger.error("[TaskManager] Task %s worker failed: %s", task_id, error_msg)
+                return f"ERROR: {error_msg}"
 
             output = worker_result.output
             if output is None:
@@ -266,6 +293,21 @@ class TaskManager:
                         task_id, node.completed_at - node.started_at)
             return output
 
+        except asyncio.TimeoutError:
+            error_msg = f"Worker timed out after {effective_timeout}s"
+            node.status = "failed"
+            node.error = error_msg
+            node.completed_at = time.time()
+
+            self._emit("task_tree_node_failed", {
+                "task_id": task_id,
+                "status": "failed",
+                "error": error_msg,
+            })
+
+            logger.error("[TaskManager] Task %s timed out", task_id)
+            return f"ERROR: {error_msg}"
+
         except Exception as exc:
             error_msg = str(exc)
             node.status = "failed"
@@ -281,7 +323,7 @@ class TaskManager:
             logger.error("[TaskManager] Task %s failed: %s", task_id, error_msg)
             return f"ERROR: {error_msg}"
 
-    def spawn_batch_and_wait(
+    async def spawn_batch_and_wait(
         self,
         task_ids: List[str],
         timeout: int = 600,
@@ -289,8 +331,7 @@ class TaskManager:
         """
         并发执行多个已注册任务，所有任务同时启动，互不阻塞。
 
-        每个任务在独立线程 + 独立 event loop 中运行（与 spawn_and_wait 机制相同），
-        线程数 = len(task_ids)。
+        使用 asyncio.gather 在同一 event loop 中并发运行（与 MCP client 共享 event loop）。
 
         Args:
             task_ids: 已通过 create_task() 注册的 task_id 列表（最少 1 个）
@@ -329,42 +370,25 @@ class TaskManager:
                 ensure_ascii=False,
             )
 
-        # 单次等待上限 = 任务超时 + 30s 线程启动缓冲
-        wall_timeout = timeout + 30
-        results: List[dict] = []
-
         logger.info(
             "[TaskManager] spawn_batch_and_wait: launching %d tasks in parallel (timeout=%ds)",
             len(task_ids), timeout,
         )
 
-        with ThreadPoolExecutor(max_workers=len(task_ids)) as pool:
-            # 同时提交所有任务
-            futures = {
-                tid: pool.submit(self.spawn_and_wait, tid, timeout)
-                for tid in task_ids
-            }
+        # 使用 asyncio.gather 并发执行，每个任务自带超时
+        async def _safe_spawn(tid: str) -> dict:
+            try:
+                output = await self.spawn_and_wait(tid, timeout)
+                if isinstance(output, str) and output.startswith("ERROR:"):
+                    return {"task_id": tid, "status": "error", "error": output[:300]}
+                else:
+                    summary = output[:300] + ("..." if len(output) > 300 else "")
+                    return {"task_id": tid, "status": "ok", "summary": summary}
+            except Exception as exc:
+                return {"task_id": tid, "status": "error", "error": str(exc)[:300]}
 
-            # 按原始顺序收集结果（所有 future 已并发运行）
-            for tid in task_ids:
-                try:
-                    output = futures[tid].result(timeout=wall_timeout)
-                    # spawn_and_wait 失败时返回 "ERROR: ..." 字符串
-                    if isinstance(output, str) and output.startswith("ERROR:"):
-                        results.append({"task_id": tid, "status": "error", "error": output[:300]})
-                    else:
-                        # 批量执行场景：Worker 结果已写入文件，Orchestrator 只需摘要
-                        # 完整内容通过 list_output_files / read_output_file 获取
-                        # 截断为 300 字符，避免 N 份完整输出堆满 Orchestrator 上下文
-                        summary = output[:300] + ("..." if len(output) > 300 else "")
-                        results.append({"task_id": tid, "status": "ok", "summary": summary})
-                except TimeoutError:
-                    results.append({
-                        "task_id": tid, "status": "error",
-                        "error": f"task timed out after {wall_timeout}s",
-                    })
-                except Exception as exc:
-                    results.append({"task_id": tid, "status": "error", "error": str(exc)[:300]})
+        results = await asyncio.gather(*[_safe_spawn(tid) for tid in task_ids])
+        results = list(results)
 
         succeeded = sum(1 for r in results if r["status"] == "ok")
         failed = len(results) - succeeded

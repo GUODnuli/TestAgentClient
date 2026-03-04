@@ -32,10 +32,10 @@ def make_orchestrator_tools(task_manager: Any, available_workers: List[str]):
         worker_name: str,
         input_data: Optional[Dict[str, Any]] = None,
         parent_id: Optional[str] = None,
-    ) -> str:
+    ) -> ToolResponse:
         """Register a new task to be executed by the specified worker.
 
-        Returns the task_id string for use with spawn_and_wait().
+        Returns the task_id for use with spawn_and_wait().
         The task is NOT executed immediately — call spawn_and_wait(task_id) to run it.
 
         Args:
@@ -49,7 +49,7 @@ def make_orchestrator_tools(task_manager: Any, available_workers: List[str]):
             parent_id: Optional task_id of the parent task (for sub-tasks).
 
         Returns:
-            task_id string (e.g. "task_001")
+            ToolResponse containing task_id (e.g. "task_001")
         """
         if not description:
             return ToolResponse(content="ERROR: description cannot be empty")
@@ -64,10 +64,10 @@ def make_orchestrator_tools(task_manager: Any, available_workers: List[str]):
         )
         return ToolResponse(content=result)
 
-    def spawn_and_wait(task_id: str) -> str:
+    async def spawn_and_wait(task_id: str) -> ToolResponse:
         """Execute a registered task and wait for its completion.
 
-        Runs the worker synchronously and returns the full output text.
+        Runs the worker asynchronously and returns the full output text.
         If the worker fails, returns an "ERROR: ..." string.
 
         Args:
@@ -79,14 +79,14 @@ def make_orchestrator_tools(task_manager: Any, available_workers: List[str]):
         if not task_id:
             return ToolResponse(content="ERROR: task_id cannot be empty")
 
-        result = task_manager.spawn_and_wait(task_id)
+        result = await task_manager.spawn_and_wait(task_id)
         return ToolResponse(content=result)
 
-    def spawn_task(
+    async def spawn_task(
         description: str,
         worker_name: str,
         input_data: Optional[Dict[str, Any]] = None,
-    ) -> str:
+    ) -> ToolResponse:
         """Convenience: create a task AND execute it immediately in one call.
 
         Equivalent to: task_id = create_task(...); result = spawn_and_wait(task_id)
@@ -104,10 +104,10 @@ def make_orchestrator_tools(task_manager: Any, available_workers: List[str]):
             worker_name=worker_name,
             input_data=input_data,
         )
-        result = task_manager.spawn_and_wait(task_id)
+        result = await task_manager.spawn_and_wait(task_id)
         return ToolResponse(content=result)
 
-    def list_tasks() -> str:
+    def list_tasks() -> ToolResponse:
         """Show the current task tree with status.
 
         Use this to track progress before finalizing or when deciding next steps.
@@ -117,7 +117,7 @@ def make_orchestrator_tools(task_manager: Any, available_workers: List[str]):
         """
         return ToolResponse(content=task_manager.list_tasks())
 
-    def get_available_workers() -> str:
+    def get_available_workers() -> ToolResponse:
         """List all available workers with their descriptions.
 
         Returns:
@@ -133,10 +133,10 @@ def make_orchestrator_tools(task_manager: Any, available_workers: List[str]):
             })
         return ToolResponse(content=json.dumps(result, ensure_ascii=False, indent=2))
 
-    def spawn_batch_and_wait(task_ids: str, timeout: int = 600) -> str:
+    async def spawn_batch_and_wait(task_ids: str, timeout: int = 600) -> ToolResponse:
         """Execute multiple registered tasks concurrently and wait for all to complete.
 
-        All tasks start simultaneously in separate threads. Use this when tasks are
+        All tasks start simultaneously as concurrent coroutines. Use this when tasks are
         independent of each other (e.g. generating test cases for N test-point batches
         in parallel).
 
@@ -175,7 +175,7 @@ def make_orchestrator_tools(task_manager: Any, available_workers: List[str]):
         if not isinstance(ids, list):
             return ToolResponse(content="ERROR: task_ids must be a JSON array, e.g. '[\"task_001\", \"task_002\"]'")
 
-        result = task_manager.spawn_batch_and_wait(ids, timeout=timeout)
+        result = await task_manager.spawn_batch_and_wait(ids, timeout=timeout)
         return ToolResponse(content=result)
 
     # Update docstrings to include the actual worker list
